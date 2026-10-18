@@ -66,12 +66,12 @@ jobs:
           if kill -0 $PID; then echo "still running after 10 s"; kill $PID; else echo "app exited early"; cat "$RUNNER_TEMP/run.log"; exit 1; fi
           cat "$RUNNER_TEMP/run.log"
 
-      - name: Install ChipWave Tracker from its real release, launch it, remove it
+      - name: Install ChipWave Studio from its real release, launch it, remove it
         run: |
           BIN="$PWD/dist/Wave Hub.app/Contents/MacOS/WaveHub"
           APP="$HOME/Applications/ChipWave.app"
           "$BIN" --install chipwave-tracker | tee "$RUNNER_TEMP/cw-install.log"
-          grep -q "Installed ChipWave Tracker" "$RUNNER_TEMP/cw-install.log"
+          grep -q "Installed ChipWave Studio" "$RUNNER_TEMP/cw-install.log"
           test -x "$APP/Contents/MacOS/ChipWave"
           plutil -p "$APP/Contents/Info.plist" | grep -E 'CFBundleExecutable|CFBundleShortVersionString'
           lipo -archs "$APP/Contents/MacOS/ChipWave" || true

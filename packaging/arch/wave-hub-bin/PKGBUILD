@@ -4,7 +4,7 @@
 pkgname=wave-hub-bin
 pkgver=0.2.5
 pkgrel=1
-pkgdesc="Free launcher that installs, updates and opens the Wave apps (BigWave Radio, ChipWave Tracker, StreamWave)"
+pkgdesc="Free launcher that installs, updates and opens the Wave apps (BigWave Radio, ChipWave Studio, StreamWave)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/postmanpat-303/WaveHub"
 license=('MIT')

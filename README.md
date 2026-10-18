@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Free for Windows and Linux.</b><br>
-  One place to install, update and open the Wave apps: BigWave Radio, ChipWave Tracker and StreamWave.
+  One place to install, update and open the Wave apps: BigWave Radio, ChipWave Studio and StreamWave.
 </p>
 
 <p align="center">
@@ -27,7 +27,7 @@ version comes out, click **Update**. That's it. No account, no ads, no tracking.
 | App | What it is |
 | --- | --- |
 | 🐺 [BigWave Radio](https://github.com/postmanpat-303/BigWaveRadio) | Free internet radio with mood chips, plugins and a visualiser |
-| 🦗 [ChipWave Tracker](https://github.com/postmanpat-303/ChipWaveTracker) | A modern OctaMED-inspired music tracker |
+| 🦗 [ChipWave Studio](https://github.com/postmanpat-303/ChipWaveStudio) | A modern OctaMED-inspired music tracker |
 | 🐋 [StreamWave](https://github.com/postmanpat-303/StreamWave) | Record and edit audio for streams and podcasts, with OBS sync |
 
 ## What it does
@@ -50,7 +50,7 @@ version comes out, click **Update**. That's it. No account, no ads, no tracking.
 - **Spots missing files.** If an app's program has gone (for example Windows Security
   quarantined it), the card says **Files missing** and offers **Repair**. **•••** also has
   **Reinstall**.
-- ChipWave Tracker has no Linux download yet, so on Linux its card says "Windows only for now"
+- ChipWave Studio has no Linux download yet, so on Linux its card says "Windows only for now"
   and links to the build-from-source instructions.
 - **Raspberry Pi and other ARM Linux** too, and **macOS** for BigWave Radio.
 - Every link (GitHub, release notes, Discussions, Buy Me a Coffee, PayPal) opens in your default
@@ -87,7 +87,7 @@ Pick the file for your computer:
 | Any Linux | `WaveHub-<version>-linux-x86_64.AppImage` | `chmod +x WaveHub-*.AppImage`, then run it. |
 | Any Linux, no package | `WaveHub-<version>-linux-x86_64.tar.gz` | Unpack it, then `./install.sh` (adds it to your menu; `./install.sh --uninstall` removes it). |
 | Raspberry Pi and other 64-bit ARM Linux | the same files with `aarch64` instead of `x86_64` | As above. |
-| macOS (Apple Silicon and Intel) | `WaveHub-<version>-macos-universal.dmg` | Open it and drag Wave Hub into Applications. On a Mac, Wave Hub can install BigWave Radio and ChipWave Tracker. |
+| macOS (Apple Silicon and Intel) | `WaveHub-<version>-macos-universal.dmg` | Open it and drag Wave Hub into Applications. On a Mac, Wave Hub can install all three apps. |
 
 The Linux files work on any distribution from 2020 on (glibc 2.31 or newer).
 

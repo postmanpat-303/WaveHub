@@ -2,7 +2,7 @@
 Type=Application
 Name=Wave Hub
 GenericName=App Launcher
-Comment=Install, update and open BigWave Radio, ChipWave Tracker and StreamWave
+Comment=Install, update and open BigWave Radio, ChipWave Studio and StreamWave
 Exec=wave-hub
 Icon=wave-hub
 Terminal=false

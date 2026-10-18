@@ -51,7 +51,7 @@ VIAddVersionKey "CompanyName" "${PUBLISHER}"
 !define MUI_HEADERIMAGE_BITMAP "header.bmp"
 !define MUI_HEADERIMAGE_UNBITMAP "header.bmp"
 !define MUI_ABORTWARNING
-!define MUI_WELCOMEPAGE_TEXT "Wave Hub installs, updates and opens the Wave apps: BigWave Radio, ChipWave Tracker and StreamWave.$\r$\n$\r$\nIt's free, and it installs just for you, so no administrator password is needed.$\r$\n$\r$\nClick Next to continue."
+!define MUI_WELCOMEPAGE_TEXT "Wave Hub installs, updates and opens the Wave apps: BigWave Radio, ChipWave Studio and StreamWave.$\r$\n$\r$\nIt's free, and it installs just for you, so no administrator password is needed.$\r$\n$\r$\nClick Next to continue."
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${EXE}"
 !define MUI_FINISHPAGE_RUN_TEXT "Start Wave Hub"
 

@@ -2,7 +2,7 @@ Wave Hub - Linux
 ================
 
 Wave Hub is free. It installs, updates and opens the Wave apps
-(BigWave Radio, ChipWave Tracker and StreamWave).
+(BigWave Radio, ChipWave Studio and StreamWave).
 
 Run it from this folder:      ./wave-hub
 Install it for yourself:      ./install.sh

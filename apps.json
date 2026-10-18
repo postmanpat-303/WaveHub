@@ -49,9 +49,9 @@
     },
     {
       "id": "chipwave-tracker",
-      "name": "ChipWave Tracker",
+      "name": "ChipWave Studio",
       "description": "A modern OctaMED-inspired music tracker.",
-      "repo": "postmanpat-303/ChipWaveTracker",
+      "repo": "postmanpat-303/ChipWaveStudio",
       "icon": "chipwave_tracker",
       "accent": [
         20,

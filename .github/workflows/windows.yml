@@ -203,16 +203,16 @@ jobs:
             if ($p.ExitCode -ne 0) { throw "$id did not uninstall (exit $($p.ExitCode))" }
           }
 
-      - name: ChipWave Tracker installed with its own setup is found and removed (publisher Del (postmanpat))
+      - name: ChipWave Studio installed with its own setup is found and removed (publisher Del (postmanpat))
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $v = "${{ steps.ver.outputs.ver }}"
           $hub = "dist\v$v\WaveHub.exe"
-          $tag = gh release view -R postmanpat-303/ChipWaveTracker --json tagName -q .tagName
+          $tag = gh release view -R postmanpat-303/ChipWaveStudio --json tagName -q .tagName
           "ChipWave latest: $tag"
           $setup = "$env:RUNNER_TEMP\chipwave-setup.exe"
-          gh release download $tag -R postmanpat-303/ChipWaveTracker --pattern "ChipWave-$($tag.TrimStart('v'))-setup-x64.exe" -O $setup
+          gh release download $tag -R postmanpat-303/ChipWaveStudio --pattern "ChipWave-$($tag.TrimStart('v'))-setup-x64.exe" -O $setup
           $p = Start-Process $setup -ArgumentList '/S' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "ChipWave setup exit $($p.ExitCode)" }
           $keys = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ChipWaveTracker', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ChipWaveTracker'
