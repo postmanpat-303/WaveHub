@@ -102,11 +102,20 @@ jobs:
           Start-Process "$dir\WaveHub.exe" -ArgumentList '--update-info' -Wait -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\info2.txt"
           Get-Content "$env:RUNNER_TEMP\info2.txt"
           if (-not (Select-String "$env:RUNNER_TEMP\info2.txt" -Pattern 'installed as: Windows setup' -Quiet)) { throw "setup not detected" }
-          $app = Start-Process "$dir\WaveHub.exe" -PassThru
+          $err = "$env:RUNNER_TEMP\gui-err.txt"
+          $app = Start-Process "$dir\WaveHub.exe" -PassThru -RedirectStandardError $err
           Start-Sleep 10
-          if ($app.HasExited) { throw "Wave Hub exited early ($($app.ExitCode))" }
-          "still running after 10 s"
-          Stop-Process $app
+          if ($app.HasExited) {
+            $msg = Get-Content $err -Raw
+            "exited early ($($app.ExitCode)): $msg"
+            # GitHub's Windows runners have no GPU, only Windows' OpenGL 1.1, which egui can't use.
+            if ($msg -match 'OpenGL|opengl|glutin|pixel format|GL context|NoAvailablePixelFormat|wgl') {
+              "::warning::No usable OpenGL on this runner, so the window couldn't open here (expected on GitHub's Windows runners)."
+            } else { throw "Wave Hub exited early" }
+          } else {
+            "still running after 10 s"
+            Stop-Process $app
+          }
           Start-Sleep 2
           Start-Process "$dir\Uninstall.exe" -ArgumentList '/S' -Wait
           Start-Sleep 5

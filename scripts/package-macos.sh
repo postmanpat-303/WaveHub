@@ -39,6 +39,11 @@ DMGDIR="$(mktemp -d)"
 cp -R "$APP" "$DMGDIR/"
 ln -s /Applications "$DMGDIR/Applications"
 cp packaging/macos/README.txt "$DMGDIR/Read me first.txt"
-hdiutil create -volname "Wave Hub $VER" -srcfolder "$DMGDIR" -fs HFS+ -format UDZO -ov "$OUT/$NAME.dmg"
+# hdiutil sometimes fails with "Resource busy" on CI runners; try a few times.
+for i in 1 2 3 4 5; do
+  hdiutil create -volname "Wave Hub $VER" -srcfolder "$DMGDIR" -fs HFS+ -format UDZO -ov "$OUT/$NAME.dmg" && break
+  echo "hdiutil failed (try $i), retrying"; sleep $((i * 5))
+done
+test -f "$OUT/$NAME.dmg"
 rm -rf "$DMGDIR"
 ls -la "$OUT"/"$NAME".*
