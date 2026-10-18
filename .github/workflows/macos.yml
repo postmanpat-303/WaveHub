@@ -97,6 +97,28 @@ jobs:
           test ! -e "$HOME/Applications/BigWave Radio.app"
           if "$BIN" --install streamwave > "$RUNNER_TEMP/sw.log" 2>&1; then cat "$RUNNER_TEMP/sw.log"; echo "::notice::StreamWave now has a Mac download"; "$BIN" --uninstall streamwave; else cat "$RUNNER_TEMP/sw.log"; grep -q "no download for macOS" "$RUNNER_TEMP/sw.log"; fi
 
+      - name: Upgrade from the published 0.2.3 app (installed apps kept)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=${{ steps.ver.outputs.ver }}
+          T="$RUNNER_TEMP/up"; mkdir -p "$T"
+          gh release download v0.2.3 -R postmanpat-303/WaveHub --pattern 'WaveHub-0.2.3-macos-universal.zip' -D "$T"
+          ditto -x -k "$T/WaveHub-0.2.3-macos-universal.zip" "$HOME/Applications"
+          OLD="$HOME/Applications/Wave Hub.app/Contents/MacOS/WaveHub"
+          "$OLD" --version
+          "$OLD" --install bigwave-radio
+          rm -rf "$HOME/Applications/Wave Hub.app"
+          ditto -x -k "dist/v$VER/WaveHub-$VER-macos-universal.zip" "$HOME/Applications"
+          NEW="$HOME/Applications/Wave Hub.app/Contents/MacOS/WaveHub"
+          "$NEW" --version | grep -F "$VER"
+          plutil -p "$HOME/Applications/Wave Hub.app/Contents/Info.plist" | grep -E 'CFBundleIdentifier|Copyright'
+          "$NEW" --list-apps | tee "$T/list.txt"
+          grep -q "bigwave-radio: 0" "$T/list.txt"
+          "$NEW" --uninstall bigwave-radio
+          rm -rf "$HOME/Applications/Wave Hub.app"
+          echo "upgrade from 0.2.3 OK"
+
       - uses: actions/upload-artifact@v4
         with:
           name: WaveHub-${{ steps.ver.outputs.ver }}-macos-universal

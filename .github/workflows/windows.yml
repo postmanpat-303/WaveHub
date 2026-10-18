@@ -164,6 +164,42 @@ jobs:
             if ($p.ExitCode -ne 0) { throw "$id did not uninstall (exit $($p.ExitCode))" }
           }
 
+      - name: Upgrade from the published 0.2.3 setup (apps and uninstall entry kept)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.ver.outputs.ver }}"
+          $old = "$env:RUNNER_TEMP\old-setup.exe"
+          gh release download v0.2.3 -R postmanpat-303/WaveHub --pattern 'WaveHub-0.2.3-setup-x64.exe' -O $old
+          $p = Start-Process $old -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "0.2.3 setup exit $($p.ExitCode)" }
+          $dir = "$env:LOCALAPPDATA\Programs\Wave Hub"
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub'
+          Get-ItemProperty $key | Format-List DisplayName, DisplayVersion, Publisher
+          $p = Start-Process "$dir\WaveHub.exe" -ArgumentList '--install', 'bigwave-radio' -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\up-install.txt"
+          Get-Content "$env:RUNNER_TEMP\up-install.txt"
+          if ($p.ExitCode -ne 0) { throw "0.2.3 could not install BigWave Radio" }
+          $p = Start-Process "dist\v$v\WaveHub-$v-setup-x64.exe" -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "$v setup exit $($p.ExitCode)" }
+          $e = Get-ItemProperty $key
+          $e | Format-List DisplayName, DisplayVersion, Publisher, UninstallString
+          if ($e.DisplayVersion -ne $v) { throw "uninstall entry still says $($e.DisplayVersion)" }
+          if ($e.Publisher -ne 'Del (postmanpat)') { throw "publisher is $($e.Publisher)" }
+          $entries = @(Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'Wave Hub' })
+          if ($entries.Count -ne 1) { throw "expected one Wave Hub uninstall entry, found $($entries.Count)" }
+          Start-Process "$dir\WaveHub.exe" -ArgumentList '--version' -Wait -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\up-ver.txt"
+          Get-Content "$env:RUNNER_TEMP\up-ver.txt"
+          if (-not (Select-String "$env:RUNNER_TEMP\up-ver.txt" -Pattern $v -SimpleMatch -Quiet)) { throw "the installed program is not $v" }
+          Start-Process "$dir\WaveHub.exe" -ArgumentList '--list-apps' -Wait -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\up-list.txt"
+          Get-Content "$env:RUNNER_TEMP\up-list.txt"
+          if (-not (Select-String "$env:RUNNER_TEMP\up-list.txt" -Pattern 'bigwave-radio: 0' -Quiet)) { throw "BigWave Radio was forgotten after the upgrade" }
+          Start-Process "$dir\WaveHub.exe" -ArgumentList '--uninstall', 'bigwave-radio' -Wait -NoNewWindow
+          Start-Process "$dir\Uninstall.exe" -ArgumentList '/S' -Wait
+          Start-Sleep 5
+          if (Test-Path "$dir\WaveHub.exe") { throw "uninstall left the program behind" }
+          if (Test-Path $key) { throw "uninstall left its entry behind" }
+          "upgrade from 0.2.3 OK"
+
       - name: Microsoft Defender scan (information only)
         continue-on-error: true
         run: |
