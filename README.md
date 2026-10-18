@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/postmanpat-303/WaveHub/releases"><b>⬇ Download Wave Hub</b></a> ·
+  <a href="https://github.com/postmanpat-303/WaveHub/releases/latest"><b>⬇ Download Wave Hub</b></a> ·
   <a href="https://github.com/postmanpat-303/WaveHub/discussions">Discussions</a> ·
   <a href="https://buymeacoffee.com/postmanpat">Buy Me a Coffee</a>
 </p>
@@ -81,7 +81,7 @@ Pick the file for your computer:
 | Any Linux | `WaveHub-<version>-linux-x86_64.AppImage` | `chmod +x WaveHub-*.AppImage`, then run it. |
 | Any Linux, no package | `WaveHub-<version>-linux-x86_64.tar.gz` | Unpack it, then `./install.sh` (adds it to your menu; `./install.sh --uninstall` removes it). |
 | Raspberry Pi and other 64-bit ARM Linux | the same files with `aarch64` instead of `x86_64` | As above. |
-| macOS (Apple Silicon and Intel) | `WaveHub-<version>-macos-universal.dmg`, when the release has one | Open it and drag Wave Hub into Applications. On a Mac, Wave Hub can install BigWave Radio. |
+| macOS (Apple Silicon and Intel) | `WaveHub-<version>-macos-universal.dmg` | Open it and drag Wave Hub into Applications. On a Mac, Wave Hub can install BigWave Radio. |
 
 The Linux files work on any distribution from 2020 on (glibc 2.31 or newer).
 
