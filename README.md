@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/postmanpat-303/WaveHub/releases/latest"><b>⬇ Download Wave Hub</b></a> ·
+  <a href="https://postmanpat-303.github.io/WaveHub/"><b>🌐 Website</b></a> ·
   <a href="https://github.com/postmanpat-303/WaveHub/discussions">Discussions</a> ·
   <a href="https://buymeacoffee.com/postmanpat">Buy Me a Coffee</a>
 </p>
