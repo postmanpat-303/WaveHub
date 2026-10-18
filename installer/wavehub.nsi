@@ -22,7 +22,7 @@ Unicode true
 
 !define APPNAME "Wave Hub"
 !define EXE "WaveHub.exe"
-!define PUBLISHER "Derek Heasley"
+!define PUBLISHER "Del (postmanpat)"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub"
 !define ICON "..\assets\icons\wavehub.ico"
 
@@ -39,7 +39,7 @@ VIAddVersionKey "ProductName" "${APPNAME}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "FileDescription" "${APPNAME} setup"
-VIAddVersionKey "LegalCopyright" "MIT, (c) 2026 Derek Heasley"
+VIAddVersionKey "LegalCopyright" "MIT, (c) 2026 Del (postmanpat)"
 VIAddVersionKey "CompanyName" "${PUBLISHER}"
 
 !define MUI_ICON "${ICON}"

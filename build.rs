@@ -15,8 +15,8 @@ fn main() {
         res.set("InternalName", "WaveHub");
         res.set("ProductName", "Wave Hub");
         res.set("FileDescription", "Wave Hub");
-        res.set("CompanyName", "Derek Heasley");
-        res.set("LegalCopyright", "Copyright (c) 2026 Derek Heasley. MIT License.");
+        res.set("CompanyName", "Del (postmanpat)");
+        res.set("LegalCopyright", "Copyright (c) 2026 Del (postmanpat). MIT License.");
         if let Err(e) = res.compile() {
             println!("cargo:warning=icon embedding skipped: {e}");
         }

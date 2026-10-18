@@ -1000,7 +1000,7 @@ impl WaveHub {
             ui.vertical(|ui| {
                 ui.label(RichText::new("Wave Hub").font(FontId::proportional(26.0)).family(bold()).color(p().text));
                 ui.label(RichText::new(format!("Wave Hub version {}", env!("CARGO_PKG_VERSION"))).size(16.0).family(bold()).color(p().text));
-                ui.label(RichText::new("MIT License · © 2026 Derek Heasley").color(p().muted));
+                ui.label(RichText::new("MIT License · © 2026 Del (postmanpat)").color(p().muted));
                 ui.add_space(4.0);
                 ui.add(egui::Label::new(RichText::new("Wave Hub is free and always will be. No account, no ads, no tracking. It installs and updates BigWave Radio, ChipWave Tracker and StreamWave on Windows, Linux and Mac, straight from their official GitHub releases.").color(p().text)).wrap());
             });

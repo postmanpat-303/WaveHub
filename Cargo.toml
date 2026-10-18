@@ -1,9 +1,9 @@
 [package]
 name = "wave-hub"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 license = "MIT"
-authors = ["Derek Heasley"]
+authors = ["Del (postmanpat)"]
 description = "Wave Hub: install, update and open BigWave Radio, ChipWave Tracker and StreamWave"
 repository = "https://github.com/postmanpat-303/WaveHub"
 publish = false
@@ -23,8 +23,8 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # --- Linux packages (scripts/package-linux.sh) ---
 [package.metadata.deb]
 name = "wave-hub"
-maintainer = "Derek Heasley <https://github.com/postmanpat-303>"
-copyright = "2026 Derek Heasley"
+maintainer = "Del (postmanpat) <https://github.com/postmanpat-303>"
+copyright = "2026 Del (postmanpat)"
 license-file = ["LICENSE", "0"]
 extended-description = """Wave Hub is a free launcher that installs, updates and opens the Wave apps \
 (BigWave Radio, ChipWave Tracker and StreamWave), checking every download against its checksum."""

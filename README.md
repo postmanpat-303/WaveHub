@@ -150,7 +150,7 @@ better, you can help keep them going:
 
 ## Licence
 
-Wave Hub is released under the [MIT License](LICENSE). © 2026 Derek Heasley.
+Wave Hub is released under the [MIT License](LICENSE). © 2026 Del (postmanpat).
 
 The Poppins font in `assets/fonts/` is by the Poppins Project Authors and is used under the
 SIL Open Font License 1.1 (see [`assets/fonts/OFL-Poppins.txt`](assets/fonts/OFL-Poppins.txt)).

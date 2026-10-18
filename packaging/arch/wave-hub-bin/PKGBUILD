@@ -1,8 +1,8 @@
-# Maintainer: Derek Heasley <https://github.com/postmanpat-303>
+# Maintainer: Del (postmanpat) <https://github.com/postmanpat-303>
 # Prebuilt Wave Hub from the GitHub release tarball (built for glibc 2.31 and newer).
 # Build:  makepkg -si      (Arch / CachyOS / Manjaro / EndeavourOS)
 pkgname=wave-hub-bin
-pkgver=0.2.3
+pkgver=0.2.4
 pkgrel=1
 pkgdesc="Free launcher that installs, updates and opens the Wave apps (BigWave Radio, ChipWave Tracker, StreamWave)"
 arch=('x86_64' 'aarch64')

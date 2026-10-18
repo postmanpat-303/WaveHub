@@ -13,9 +13,10 @@
   <launchable type="desktop-id">wave-hub.desktop</launchable>
   <url type="homepage">https://github.com/postmanpat-303/WaveHub</url>
   <url type="donation">https://buymeacoffee.com/postmanpat</url>
-  <developer id="io.github.postmanpat-303"><name>Derek Heasley</name></developer>
+  <developer id="io.github.postmanpat-303"><name>Del (postmanpat)</name></developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.4" date="2026-10-18"/>
     <release version="0.2.3" date="2026-10-18"/>
     <release version="0.2.2" date="2026-10-18"/>
     <release version="0.2.1" date="2026-10-18"/>

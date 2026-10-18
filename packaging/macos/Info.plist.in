@@ -4,7 +4,7 @@
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleExecutable</key><string>WaveHub</string>
-  <key>CFBundleIdentifier</key><string>ie.derekheasley.wavehub</string>
+  <key>CFBundleIdentifier</key><string>io.github.postmanpat-303.wavehub</string>
   <key>CFBundleName</key><string>Wave Hub</string>
   <key>CFBundleDisplayName</key><string>Wave Hub</string>
   <key>CFBundleIconFile</key><string>WaveHub</string>
@@ -15,6 +15,6 @@
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSHumanReadableCopyright</key><string>© 2026 Derek Heasley. MIT licence.</string>
+  <key>NSHumanReadableCopyright</key><string>© 2026 Del (postmanpat). MIT licence.</string>
 </dict>
 </plist>
