@@ -1,0 +1,341 @@
+//! Installing, updating, opening and removing an app.
+//!
+//! Default install is the portable zip on Windows and the AppImage on Linux, into Wave Hub's own
+//! per-user folder (no admin rights needed). On Windows the official setup program can be chosen
+//! instead in Settings. An app is never replaced while it is running.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::AtomicBool;
+
+use crate::github;
+use crate::manifest::{fill, AppSpec};
+use crate::store::{now, Kind, Paths, Record};
+
+/// What Wave Hub would do to install `spec` on this computer.
+#[derive(Clone, Debug)]
+pub enum Plan {
+    AppImage { file: String },
+    Portable { file: String, exe: String },
+    Installer { file: String, exe_candidates: Vec<String> },
+    Unavailable(String),
+}
+
+pub fn os_label() -> &'static str {
+    if cfg!(windows) {
+        "Windows"
+    } else if cfg!(target_os = "linux") {
+        "Linux"
+    } else {
+        "this system"
+    }
+}
+
+pub fn plan(spec: &AppSpec, prefer_installer: bool) -> Plan {
+    if cfg!(windows) {
+        let Some(w) = &spec.windows else { return Plan::Unavailable("No Windows download yet.".into()) };
+        let installer = w.installer.clone().map(|file| Plan::Installer { file, exe_candidates: w.installed_exe.clone() });
+        let portable = match (&w.portable, &w.exe) {
+            (Some(file), Some(exe)) => Some(Plan::Portable { file: file.clone(), exe: exe.clone() }),
+            _ => None,
+        };
+        let pick = if prefer_installer { installer.or(portable) } else { portable.or(installer) };
+        pick.unwrap_or_else(|| Plan::Unavailable("No Windows download yet.".into()))
+    } else if cfg!(target_os = "linux") {
+        let l = spec.linux.clone().unwrap_or_default();
+        match l.appimage {
+            Some(file) if cfg!(target_arch = "x86_64") => Plan::AppImage { file },
+            Some(_) => Plan::Unavailable("No download for this processor yet.".into()),
+            None => Plan::Unavailable(l.unavailable.unwrap_or_else(|| "No Linux download yet.".into())),
+        }
+    } else {
+        Plan::Unavailable("Wave Hub supports Windows and Linux.".into())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Phase {
+    Checking,
+    Downloading { done: u64, total: u64 },
+    Verifying,
+    Installing,
+    /// Waiting for the official setup program to finish.
+    RunningInstaller,
+}
+
+/// Downloads, checks and installs `tag` of `spec`. `previous` is what's installed now, if anything.
+pub fn install(
+    spec: &AppSpec,
+    tag: &str,
+    plan: &Plan,
+    paths: &Paths,
+    previous: Option<&Record>,
+    cancel: &AtomicBool,
+    report: &mut dyn FnMut(Phase),
+) -> Result<Record, String> {
+    if let Some(prev) = previous {
+        if is_running(&prev.path) {
+            return Err(format!("{} is open. Close it first, then try again.", spec.name));
+        }
+    }
+    let template = match plan {
+        Plan::AppImage { file } | Plan::Portable { file, .. } | Plan::Installer { file, .. } => file,
+        Plan::Unavailable(why) => return Err(why.clone()),
+    };
+    let file = fill(template, tag);
+    report(Phase::Checking);
+    let expected = match &spec.sums {
+        Some(sums) => {
+            let text = github::get_text(&github::download_url(&spec.repo, tag, sums))?;
+            match text {
+                Some(text) => Some(
+                    github::parse_sums(&text)
+                        .into_iter()
+                        .find(|(_, name)| *name == file)
+                        .map(|(hash, _)| hash)
+                        .ok_or_else(|| format!("{sums} doesn't list {file}, so it can't be checked."))?,
+                ),
+                // Older releases may not have one; install unchecked rather than not at all.
+                None => None,
+            }
+        }
+        None => None,
+    };
+
+    let part = paths.downloads().join(format!("{file}.part"));
+    let url = github::download_url(&spec.repo, tag, &file);
+    let hash = github::download(&url, &part, cancel, &mut |done, total| report(Phase::Downloading { done, total }))?;
+    report(Phase::Verifying);
+    if let Some(expected) = expected {
+        if expected != hash {
+            let _ = std::fs::remove_file(&part);
+            return Err("The download doesn't match its published checksum, so it wasn't installed. Please try again.".into());
+        }
+    }
+    // Check again: the app may have been opened while we were downloading.
+    if let Some(prev) = previous {
+        if is_running(&prev.path) {
+            let _ = std::fs::remove_file(&part);
+            return Err(format!("{} is open. Close it first, then try again.", spec.name));
+        }
+    }
+
+    report(Phase::Installing);
+    let version = tag.trim_start_matches('v').to_string();
+    let record = |kind, path| Record { version: version.clone(), tag: tag.to_string(), kind, path, installed_at: now() };
+    let result = match plan {
+        Plan::AppImage { .. } => install_appimage(spec, &part, paths).map(|p| record(Kind::AppImage, p)),
+        Plan::Portable { exe, .. } => install_portable(spec, &part, exe, paths).map(|p| record(Kind::PortableZip, p)),
+        Plan::Installer { exe_candidates, .. } => {
+            report(Phase::RunningInstaller);
+            run_installer(spec, &part, &file, exe_candidates).map(|p| record(Kind::Installer, p))
+        }
+        Plan::Unavailable(_) => unreachable!(),
+    };
+    let _ = std::fs::remove_file(&part);
+    if result.is_ok() {
+        if let Some(prev) = previous {
+            // Moving between AppImage/portable and the installer leaves the old copy behind;
+            // tidy it if it was ours.
+            if prev.kind != Kind::Installer && result.as_ref().is_ok_and(|r| r.kind == Kind::Installer) {
+                let _ = std::fs::remove_dir_all(paths.apps().join(&spec.id));
+            }
+        }
+    }
+    result
+}
+
+fn app_dir(spec: &AppSpec, paths: &Paths) -> PathBuf {
+    paths.apps().join(&spec.id)
+}
+
+fn install_appimage(spec: &AppSpec, part: &Path, paths: &Paths) -> Result<PathBuf, String> {
+    let dir = app_dir(spec, paths);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let name: String = spec.name.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let target = dir.join(format!("{name}.AppImage"));
+    let staged = dir.join(format!("{name}.AppImage.new"));
+    // Copy rather than rename: downloads and apps may one day be on different drives.
+    std::fs::copy(part, &staged).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(&staged, &target).map_err(|e| e.to_string())?;
+    Ok(target)
+}
+
+fn install_portable(spec: &AppSpec, zip_path: &Path, exe: &str, paths: &Paths) -> Result<PathBuf, String> {
+    let dir = app_dir(spec, paths);
+    let staging = paths.apps().join(format!("{}.new", spec.id));
+    let old = paths.apps().join(format!("{}.old", spec.id));
+    let _ = std::fs::remove_dir_all(&staging);
+    let _ = std::fs::remove_dir_all(&old);
+    std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+    let unpack = || -> Result<(), String> {
+        let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("the zip can't be opened ({e})"))?;
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+            // `enclosed_name` refuses paths that would escape the folder.
+            let Some(rel) = entry.enclosed_name() else { return Err("the zip contains an unsafe path".into()) };
+            let out = staging.join(rel);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+                continue;
+            }
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let mut f = std::fs::File::create(&out).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut f).map_err(|e| e.to_string())?;
+        }
+        if !staging.join(exe).is_file() {
+            return Err(format!("the zip doesn't contain {exe}"));
+        }
+        Ok(())
+    };
+    if let Err(e) = unpack() {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    // Swap folders: old -> .old, new -> in place, then delete .old. Settings live elsewhere, so
+    // nothing of the user's is lost.
+    if dir.exists() {
+        std::fs::rename(&dir, &old).map_err(|e| format!("couldn't move the old version aside ({e}). Is {} open?", spec.name))?;
+    }
+    if let Err(e) = std::fs::rename(&staging, &dir) {
+        let _ = std::fs::rename(&old, &dir);
+        return Err(e.to_string());
+    }
+    let _ = std::fs::remove_dir_all(&old);
+    Ok(dir.join(exe))
+}
+
+fn run_installer(spec: &AppSpec, part: &Path, file: &str, candidates: &[String]) -> Result<PathBuf, String> {
+    let setup = part.with_file_name(file);
+    std::fs::rename(part, &setup).map_err(|e| e.to_string())?;
+    let status = installer_command(&setup).status();
+    let _ = std::fs::remove_file(&setup);
+    status.map_err(|e| format!("couldn't start the installer ({e})"))?;
+    find_installed(candidates).ok_or_else(|| format!("The installer finished, but {} wasn't found where expected. If you cancelled it, that's fine.", spec.name))
+}
+
+/// Where the official installer put the program, if it did.
+pub fn find_installed(candidates: &[String]) -> Option<PathBuf> {
+    let local = dirs::data_local_dir().map(|p| p.display().to_string()).unwrap_or_default();
+    let program_files = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+    candidates
+        .iter()
+        .map(|c| PathBuf::from(c.replace("{localappdata}", &local).replace("{programfiles}", &program_files)))
+        .find(|p| p.is_file())
+}
+
+#[cfg(windows)]
+fn installer_command(setup: &Path) -> Command {
+    use std::os::windows::process::CommandExt;
+    // `start /wait` goes through the shell, so installers that need admin rights get the usual
+    // Windows prompt, and we still wait for them to finish.
+    let mut cmd = Command::new("cmd");
+    cmd.arg("/C").arg("start").arg("").arg("/wait").arg(setup);
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    cmd
+}
+
+#[cfg(not(windows))]
+fn installer_command(setup: &Path) -> Command {
+    Command::new(setup)
+}
+
+/// Starts the app on its own; it keeps running if Wave Hub closes.
+pub fn open(path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!("{} is missing. Try installing again.", path.display()));
+    }
+    let mut cmd = Command::new(path);
+    if let Some(dir) = path.parent() {
+        cmd.current_dir(dir);
+    }
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // Don't hand our own AppImage environment to another AppImage.
+    for var in ["APPIMAGE", "APPDIR", "OWD", "ARGV0"] {
+        cmd.env_remove(var);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("couldn't start it ({e})"))?;
+    // Reap it when it exits so it doesn't linger as a zombie.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// Removes an app that Wave Hub installed into its own folder.
+pub fn remove(spec: &AppSpec, record: &Record, paths: &Paths) -> Result<(), String> {
+    if record.kind == Kind::Installer {
+        return Err(format!("{} was installed with its own installer. Remove it from Windows Settings > Apps.", spec.name));
+    }
+    if is_running(&record.path) {
+        return Err(format!("{} is open. Close it first.", spec.name));
+    }
+    let dir = app_dir(spec, paths);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Whether a program started from `path` is running.
+#[cfg(target_os = "linux")]
+pub fn is_running(path: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc") else { return false };
+    let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let target_str = target.to_string_lossy().into_owned();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let proc_dir = entry.path();
+        if std::fs::read_link(proc_dir.join("exe")).is_ok_and(|exe| exe == target) {
+            return true;
+        }
+        // An AppImage runs from a mount; its runtime keeps the AppImage path in its arguments
+        // or the APPIMAGE variable.
+        if let Ok(cmdline) = std::fs::read(proc_dir.join("cmdline")) {
+            if cmdline.split(|b| *b == 0).next().is_some_and(|arg0| arg0 == target_str.as_bytes()) {
+                return true;
+            }
+        }
+        if let Ok(environ) = std::fs::read(proc_dir.join("environ")) {
+            let needle = format!("APPIMAGE={target_str}");
+            if environ.split(|b| *b == 0).any(|kv| kv == needle.as_bytes()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(windows)]
+pub fn is_running(path: &Path) -> bool {
+    use std::os::windows::process::CommandExt;
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
+    let out = Command::new("tasklist")
+        .args(["/FI", &format!("IMAGENAME eq {name}"), "/NH", "/FO", "CSV"])
+        .creation_flags(0x0800_0000)
+        .output();
+    out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).to_ascii_lowercase().contains(&name.to_ascii_lowercase()))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub fn is_running(_path: &Path) -> bool {
+    false
+}
+
+/// Opens a folder in the file manager.
+pub fn reveal(path: &Path) {
+    let _ = std::fs::create_dir_all(path);
+    let program = if cfg!(windows) { "explorer" } else { "xdg-open" };
+    let _ = Command::new(program).arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+}
