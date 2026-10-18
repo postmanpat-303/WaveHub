@@ -1,0 +1,102 @@
+name: Published Wave Hub check
+
+# Run by hand (Actions > Published Wave Hub check > Run workflow). Downloads an already
+# published Wave Hub release and uses it, exactly as people have it, to install, launch and
+# remove one app from that app's real latest release on macOS, Windows and Linux.
+on:
+  workflow_dispatch:
+    inputs:
+      hub_tag:
+        description: "Wave Hub release to test (e.g. v0.2.4)"
+        required: true
+        default: "v0.2.4"
+      app:
+        description: "App id from apps.json (bigwave-radio, chipwave-tracker, streamwave)"
+        required: true
+        default: "streamwave"
+      mac_app_name:
+        description: "Name of the .app it installs on macOS (empty = skip the macOS bundle checks)"
+        required: false
+        default: "StreamWave"
+
+permissions:
+  contents: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  HUB_TAG: ${{ inputs.hub_tag }}
+  APP: ${{ inputs.app }}
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - name: Get the published Wave Hub
+        run: |
+          V=${HUB_TAG#v}
+          gh release download "$HUB_TAG" -R postmanpat-303/WaveHub --pattern "WaveHub-$V-macos-universal.zip" -D "$RUNNER_TEMP"
+          ditto -x -k "$RUNNER_TEMP/WaveHub-$V-macos-universal.zip" "$RUNNER_TEMP/hub"
+          "$RUNNER_TEMP/hub/Wave Hub.app/Contents/MacOS/WaveHub" --version
+      - name: Install, launch and remove
+        env:
+          MAC_APP: ${{ inputs.mac_app_name }}
+        run: |
+          BIN="$RUNNER_TEMP/hub/Wave Hub.app/Contents/MacOS/WaveHub"
+          "$BIN" --install "$APP" 2>&1 | tee "$RUNNER_TEMP/install.log"
+          grep -q "^Installed " "$RUNNER_TEMP/install.log"
+          grep -q "Verifying" "$RUNNER_TEMP/install.log" || { echo "no checksum step"; exit 1; }
+          "$BIN" --list-apps | tee "$RUNNER_TEMP/list.log"
+          if [ -n "$MAC_APP" ]; then
+            APPDIR="$HOME/Applications/$MAC_APP.app"
+            test -d "$APPDIR"
+            plutil -p "$APPDIR/Contents/Info.plist" | grep -E 'CFBundleExecutable|CFBundleIdentifier|CFBundleShortVersionString'
+            codesign -dv "$APPDIR" 2>&1 | grep -E 'Format|Signature' || true
+            open "$APPDIR"
+            sleep 15
+            screencapture -x "$RUNNER_TEMP/app-launch-macos.png" || true
+            pgrep -fl "$MAC_APP.app/Contents/MacOS/" || { echo "$MAC_APP did not start"; log show --last 2m --predicate "process CONTAINS \"$MAC_APP\"" | tail -40 || true; exit 1; }
+            pkill -f "$MAC_APP.app/Contents/MacOS/" || true
+            sleep 3
+          fi
+          "$BIN" --uninstall "$APP"
+          if [ -n "$MAC_APP" ]; then test ! -e "$HOME/Applications/$MAC_APP.app"; fi
+          "$BIN" --list-apps | grep -q "$APP: not installed"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: published-check-macos
+          path: ${{ runner.temp }}/*.png
+          if-no-files-found: warn
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Install and remove with the published Wave Hub
+        run: |
+          $v = $env:HUB_TAG.TrimStart('v')
+          gh release download $env:HUB_TAG -R postmanpat-303/WaveHub --pattern "WaveHub-$v-windows-x64.zip" -D $env:RUNNER_TEMP
+          Expand-Archive "$env:RUNNER_TEMP\WaveHub-$v-windows-x64.zip" "$env:RUNNER_TEMP\hub"
+          $hub = "$env:RUNNER_TEMP\hub\WaveHub.exe"
+          $log = "$env:RUNNER_TEMP\install.txt"
+          $p = Start-Process $hub -ArgumentList '--install', $env:APP -Wait -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError "$env:RUNNER_TEMP\install-err.txt"
+          Get-Content $log; Get-Content "$env:RUNNER_TEMP\install-err.txt"
+          if ($p.ExitCode -ne 0) { throw "install exit $($p.ExitCode)" }
+          if (-not (Select-String "$env:RUNNER_TEMP\install-err.txt" -Pattern 'Verifying' -Quiet)) { throw "no checksum step" }
+          Start-Process $hub -ArgumentList '--list-apps' -Wait -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\list.txt"
+          Get-Content "$env:RUNNER_TEMP\list.txt"
+          $p = Start-Process $hub -ArgumentList '--uninstall', $env:APP -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\remove.txt"
+          Get-Content "$env:RUNNER_TEMP\remove.txt"
+          if ($p.ExitCode -ne 0) { throw "uninstall exit $($p.ExitCode)" }
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install and remove with the published Wave Hub
+        run: |
+          gh release download "$HUB_TAG" -R postmanpat-303/WaveHub --pattern 'WaveHub-linux-x86_64' -D "$RUNNER_TEMP"
+          BIN="$RUNNER_TEMP/WaveHub-linux-x86_64"; chmod +x "$BIN"; "$BIN" --version
+          "$BIN" --install "$APP" 2>&1 | tee "$RUNNER_TEMP/install.log"
+          grep -q "^Installed " "$RUNNER_TEMP/install.log"
+          grep -q "Verifying" "$RUNNER_TEMP/install.log"
+          "$BIN" --list-apps
+          "$BIN" --uninstall "$APP"
