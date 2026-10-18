@@ -52,6 +52,8 @@ version comes out, click **Update**. That's it. No account, no ads, no tracking.
 - ChipWave Tracker has no Linux download yet, so on Linux its card says "Windows only for now"
   and links to the build-from-source instructions.
 - **Raspberry Pi and other ARM Linux** too, and **macOS** for BigWave Radio.
+- Every link (GitHub, release notes, Discussions, Buy Me a Coffee, PayPal) opens in your default
+  browser. Wave Hub's version is shown on the About page and in the footer.
 - **Light and dark themes** (light by default) in **About → Settings**.
 - A **Community** page with each app's Discussions, and **Check for updates** for Wave Hub itself.
 

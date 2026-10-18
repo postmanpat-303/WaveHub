@@ -691,7 +691,7 @@ impl WaveHub {
                     // so just point to the project.
                     let label = if cfg!(target_os = "macos") { "VIEW ON GITHUB" } else { "BUILD FROM SOURCE" };
                     if main_button(ui, label, p().soft, full, true).clicked() {
-                        ctx.open_url(egui::OpenUrl::new_tab(format!("https://github.com/{}#readme", spec.repo)));
+                        crate::links::open(&format!("https://github.com/{}#readme", spec.repo));
                     }
                 }
             } else if update {
@@ -939,7 +939,7 @@ impl WaveHub {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let b = egui::Button::new(RichText::new("Discussions").family(bold()).color(on(accent))).fill(accent).stroke(Stroke::NONE).corner_radius(16.0).min_size(vec2(0.0, 32.0));
                         if ui.add(b).clicked() {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(format!("https://github.com/{}/discussions", spec.repo)));
+                            crate::links::open(&format!("https://github.com/{}/discussions", spec.repo));
                         }
                         link(ui, "Report a problem", &format!("https://github.com/{}/issues", spec.repo));
                         link(ui, "Releases", &format!("https://github.com/{}/releases", spec.repo));
@@ -960,7 +960,8 @@ impl WaveHub {
             }
             ui.vertical(|ui| {
                 ui.label(RichText::new("Wave Hub").font(FontId::proportional(26.0)).family(bold()).color(p().text));
-                ui.label(RichText::new(format!("Version {} · MIT License · © 2026 Derek Heasley", env!("CARGO_PKG_VERSION"))).color(p().muted));
+                ui.label(RichText::new(format!("Wave Hub version {}", env!("CARGO_PKG_VERSION"))).size(16.0).family(bold()).color(p().text));
+                ui.label(RichText::new("MIT License · © 2026 Derek Heasley").color(p().muted));
                 ui.add_space(4.0);
                 ui.add(egui::Label::new(RichText::new("Wave Hub is free and always will be. No account, no ads, no tracking. It installs and updates BigWave Radio, ChipWave Tracker and StreamWave on Windows and Linux, straight from their official GitHub releases.").color(p().text)).wrap());
             });
@@ -1069,7 +1070,7 @@ impl WaveHub {
             None => "Not checked yet".into(),
         };
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{checked} · Installing for {} · Free and open source", install::os_label())).color(p().muted).small());
+            ui.label(RichText::new(format!("Wave Hub {} · {checked} · Installing for {} · Free and open source", env!("CARGO_PKG_VERSION"), install::os_label())).color(p().muted).small());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 link(ui, "Buy Me a Coffee", BUY_ME_A_COFFEE);
             });
@@ -1156,6 +1157,7 @@ impl eframe::App for WaveHub {
         });
         let ctx = ui.ctx().clone();
         self.uninstall_dialog(&ctx);
+        link_failed_dialog(&ctx);
         // Smooth animation while anything is moving; otherwise just keep "Checked n min ago" fresh.
         let busy = {
             let s = lock(&self.shared);
@@ -1393,7 +1395,7 @@ fn status_chip(ui: &mut Ui, text: &str, color: Color32) {
 fn link(ui: &mut Ui, text: &str, url: &str) {
     let r = ui.add(egui::Label::new(RichText::new(text).color(p().muted).size(12.5).underline()).sense(Sense::click())).on_hover_text(url).on_hover_cursor(egui::CursorIcon::PointingHand);
     if r.clicked() {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        crate::links::open(url);
     }
 }
 
@@ -1419,6 +1421,30 @@ fn credits_box(ui: &mut Ui) {
     });
 }
 
+/// "Couldn't open your browser", with the address to copy by hand.
+fn link_failed_dialog(ctx: &egui::Context) {
+    let Some((url, why)) = crate::links::FAILED.lock().unwrap_or_else(|p| p.into_inner()).clone() else { return };
+    let mut close = false;
+    let modal = egui::Modal::new(egui::Id::unique("link-failed")).frame(egui::Frame::new().fill(p().panel).corner_radius(18).inner_margin(Margin::same(24)).stroke(Stroke::new(1.0, p().line))).show(
+        ctx,
+        |ui| {
+            ui.set_width(420.0);
+            ui.label(RichText::new("Couldn't open your browser").font(FontId::proportional(19.0)).family(bold()).color(p().text));
+            ui.add(egui::Label::new(RichText::new(format!("{why}. You can copy the address into your browser instead:")).color(p().muted)).wrap());
+            ui.add_space(6.0);
+            let mut text = url.clone();
+            ui.add(egui::TextEdit::singleline(&mut text).desired_width(f32::INFINITY));
+            ui.add_space(10.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                close = ui.add(egui::Button::new(RichText::new("OK").color(p().text)).fill(p().soft).stroke(Stroke::NONE).corner_radius(16.0).min_size(vec2(80.0, 32.0))).clicked();
+            });
+        },
+    );
+    if close || modal.should_close() {
+        *crate::links::FAILED.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+}
+
 fn support_box(ui: &mut Ui, with_paypal: bool) {
     section(ui, "Support Del's work", |ui| {
         ui.add(egui::Label::new(RichText::new("All Wave apps are free. If they make your day better, a coffee keeps the updates coming. Totally optional.").color(p().muted)).wrap());
@@ -1427,7 +1453,7 @@ fn support_box(ui: &mut Ui, with_paypal: bool) {
             let coffee =
                 egui::Button::new(RichText::new("Buy Me a Coffee").family(bold()).color(INK)).fill(Color32::from_rgb(255, 221, 0)).stroke(Stroke::NONE).corner_radius(16.0).min_size(vec2(0.0, 32.0));
             if ui.add(coffee).clicked() {
-                ui.ctx().open_url(egui::OpenUrl::new_tab(BUY_ME_A_COFFEE));
+                crate::links::open(BUY_ME_A_COFFEE);
             }
             if with_paypal {
                 let paypal = egui::Button::new(RichText::new("PayPal").family(bold()).color(Color32::WHITE))
@@ -1436,7 +1462,7 @@ fn support_box(ui: &mut Ui, with_paypal: bool) {
                     .corner_radius(16.0)
                     .min_size(vec2(0.0, 32.0));
                 if ui.add(paypal).clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(PAYPAL));
+                    crate::links::open(PAYPAL);
                 }
             }
         });

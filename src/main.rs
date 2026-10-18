@@ -4,6 +4,7 @@
 mod app;
 mod github;
 mod install;
+mod links;
 mod manifest;
 mod selfupdate;
 mod store;
@@ -28,6 +29,20 @@ fn main() -> eframe::Result<()> {
         let _ = writeln!(out, "installed as: {}", kind.label());
         let _ = writeln!(out, "would update from (best first): {}", selfupdate::candidates(kind, &version, std::env::consts::ARCH).join(", "));
         return Ok(());
+    }
+    if let Some(url) = args.iter().skip_while(|a| *a != "--open-url").nth(1) {
+        // Opens a link the same way the window's links do (used by the Windows CI check).
+        match links::open_url(url) {
+            Ok(()) => {
+                let _ = writeln!(out, "opened {url}");
+                return Ok(());
+            }
+            Err(e) => {
+                links::log(&format!("couldn't open {url}: {e}"));
+                let _ = writeln!(out, "couldn't open {url}: {e}");
+                std::process::exit(1);
+            }
+        }
     }
     if args.iter().any(|a| a == "--list-apps" || a == "--uninstall") {
         // What's installed (by Wave Hub or found on this computer), and removing one.

@@ -90,6 +90,28 @@ jobs:
           Get-Content "$t\info.txt"
           if (-not (Select-String "$t\info.txt" -Pattern 'installed as: Windows portable' -Quiet)) { throw "portable not detected" }
 
+      - name: Links open through ShellExecuteW (a test URL handler records what it was given)
+        env:
+          WAVEHUB_TEST_LINKS: "1"
+        run: |
+          $v = "${{ steps.ver.outputs.ver }}"
+          $rec = Join-Path $env:RUNNER_TEMP 'record-link.ps1'
+          $got = Join-Path $env:RUNNER_TEMP 'wavehub-link.txt'
+          "Set-Content -Path '$got' -Value `$args[0]" | Set-Content $rec
+          $k = 'HKCU:\Software\Classes\wavehub-test'
+          New-Item -Force "$k\shell\open\command" | Out-Null
+          Set-ItemProperty $k -Name '(default)' -Value 'URL:Wave Hub link test'
+          Set-ItemProperty $k -Name 'URL Protocol' -Value ''
+          Set-ItemProperty "$k\shell\open\command" -Name '(default)' -Value "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$rec`" `"%1`""
+          $url = 'wavehub-test://check/discussions?a=1&b=2'
+          $p = Start-Process "dist\v$v\WaveHub.exe" -ArgumentList '--open-url', "`"$url`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "WaveHub.exe --open-url exit $($p.ExitCode)" }
+          for ($i = 0; $i -lt 30 -and -not (Test-Path $got); $i++) { Start-Sleep 1 }
+          $seen = (Get-Content $got -Raw).Trim()
+          "handler got: $seen"
+          if ($seen -notlike 'wavehub-test://check/discussions?a=1&b=2*') { throw "the link arrived changed: $seen" }
+          Remove-Item -Recurse $k
+
       - name: Smoke test the setup (silent per-user install, launch, uninstall)
         run: |
           $v = "${{ steps.ver.outputs.ver }}"
