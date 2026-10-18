@@ -22,9 +22,8 @@ use crate::store::{now, Kind, Paths, Record};
 /// What the confirm box says Wave Hub is about to do.
 pub fn what_happens(spec: &AppSpec, record: &Record) -> String {
     match record.kind {
-        Kind::AppImage | Kind::PortableZip => {
-            format!("Wave Hub deletes {} from its apps folder.", spec.name)
-        }
+        Kind::AppImage | Kind::PortableZip if cfg!(target_os = "macos") => format!("Wave Hub deletes {} from your Applications folder.", spec.name),
+        Kind::AppImage | Kind::PortableZip => format!("Wave Hub deletes {} from its apps folder.", spec.name),
         Kind::Installer => format!("Wave Hub runs {}'s own uninstaller. Windows may ask for permission.", spec.name),
         Kind::SystemPackage => "Your system's package manager removes it, and will ask for your password.".to_string(),
         Kind::MacApp => format!("Wave Hub deletes {} from Applications.", spec.name),
@@ -37,7 +36,13 @@ pub fn uninstall(spec: &AppSpec, record: &Record, paths: &Paths) -> Result<(), S
         return Err(format!("{} is open. Close it first, then try again.", spec.name));
     }
     match record.kind {
-        Kind::AppImage | Kind::PortableZip => remove_folder(&install::app_dir(spec, paths), spec),
+        Kind::AppImage | Kind::PortableZip => {
+            // A Mac app Wave Hub put in ~/Applications.
+            if let Some(app) = app_bundle(&record.path).filter(|a| !a.starts_with(paths.apps())) {
+                remove_folder(&app, spec)?;
+            }
+            remove_folder(&install::app_dir(spec, paths), spec)
+        }
         Kind::Installer => run_uninstaller(spec, record),
         Kind::SystemPackage => remove_package(spec, &record.path),
         Kind::MacApp => match app_bundle(&record.path) {
@@ -279,7 +284,7 @@ pub fn check_files(spec: &AppSpec, record: &Record, paths: &Paths) -> Files {
     }
     let still_installed = match record.kind {
         // Wave Hub's own folder is still there, only the program went.
-        Kind::AppImage | Kind::PortableZip => install::app_dir(spec, paths).is_dir(),
+        Kind::AppImage | Kind::PortableZip => install::app_dir(spec, paths).is_dir() || app_bundle(&record.path).is_some_and(|a| a.is_dir()),
         // The setup's Uninstall entry is still registered, or its folder is still there.
         Kind::Installer => spec.windows.as_ref().and_then(|w| w.uninstall_key.as_deref()).and_then(uninstall_key).is_some() || record.path.parent().is_some_and(Path::is_dir),
         Kind::SystemPackage | Kind::MacApp => false,
@@ -316,11 +321,11 @@ pub fn find_external(spec: &AppSpec) -> Option<Record> {
     if cfg!(target_os = "macos") {
         let m = spec.macos.as_ref()?;
         let home = dirs::home_dir().unwrap_or_default();
-        let exe_in_app = m.exe.as_deref().and_then(|e| e.split_once(".app/")).map(|(_, rest)| rest.to_string())?;
+        let exe_in_app = m.exe.as_deref().and_then(|e| e.split_once(".app/")).map(|(_, rest)| rest.to_string());
         for app in &m.installed_app {
             let app = PathBuf::from(app.replacen('~', &home.to_string_lossy(), 1));
-            let exe = app.join(&exe_in_app);
-            if exe.is_file() {
+            let exe = exe_in_app.as_ref().map(|r| app.join(r)).filter(|p| p.is_file()).or_else(|| install::app_program(&app));
+            if let Some(exe) = exe {
                 let version = plist_version(&app.join("Contents/Info.plist")).unwrap_or_default();
                 return Some(record(Kind::MacApp, exe, version));
             }

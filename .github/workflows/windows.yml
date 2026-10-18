@@ -144,6 +144,26 @@ jobs:
           if (Test-Path "$dir\WaveHub.exe") { throw "uninstall left the program behind" }
           "uninstalled"
 
+      - name: Install the three apps from their real releases, then remove them
+        run: |
+          $v = "${{ steps.ver.outputs.ver }}"
+          $hub = "dist\v$v\WaveHub.exe"
+          foreach ($id in 'bigwave-radio', 'chipwave-tracker', 'streamwave') {
+            $log = "$env:RUNNER_TEMP\install-$id.txt"
+            $p = Start-Process $hub -ArgumentList '--install', $id -Wait -PassThru -NoNewWindow -RedirectStandardOutput $log
+            Get-Content $log
+            if ($p.ExitCode -ne 0) { throw "$id did not install (exit $($p.ExitCode))" }
+          }
+          Start-Process $hub -ArgumentList '--list-apps' -Wait -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\list.txt"
+          Get-Content "$env:RUNNER_TEMP\list.txt"
+          if (Select-String "$env:RUNNER_TEMP\list.txt" -Pattern 'not installed' -Quiet) { throw "an app is missing from the list" }
+          foreach ($id in 'streamwave', 'chipwave-tracker', 'bigwave-radio') {
+            $log = "$env:RUNNER_TEMP\remove-$id.txt"
+            $p = Start-Process $hub -ArgumentList '--uninstall', $id -Wait -PassThru -NoNewWindow -RedirectStandardOutput $log
+            Get-Content $log
+            if ($p.ExitCode -ne 0) { throw "$id did not uninstall (exit $($p.ExitCode))" }
+          }
+
       - name: Microsoft Defender scan (information only)
         continue-on-error: true
         run: |

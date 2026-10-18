@@ -13,7 +13,6 @@
         224,
         26
       ],
-      "sums": "SHA256SUMS.txt",
       "windows": {
         "portable": "BigWaveRadio-{version}-windows-x64.zip",
         "exe": "BigWaveRadio.exe",
@@ -37,7 +36,10 @@
         ]
       },
       "macos": {
-        "zip": "BigWaveRadio-{version}-macos-universal.zip",
+        "zip": [
+          "BigWaveRadio-{version}-macos-universal.zip",
+          "BigWaveRadio-macos-universal.zip"
+        ],
         "exe": "BigWave Radio.app/Contents/MacOS/BigWaveRadio",
         "installed_app": [
           "/Applications/BigWave Radio.app",
@@ -72,6 +74,15 @@
         "unavailable": "Windows only for now. On Linux, build it from source."
       },
       "macos": {
+        "zip": [
+          "ChipWave-{version}-macos-universal.zip",
+          "ChipWave-macos-universal.zip"
+        ],
+        "exe": "ChipWave.app/Contents/MacOS/ChipWave",
+        "installed_app": [
+          "/Applications/ChipWave.app",
+          "~/Applications/ChipWave.app"
+        ],
         "unavailable": "Not available on Mac yet."
       }
     },
@@ -86,7 +97,6 @@
         112,
         10
       ],
-      "sums": "SHA256SUMS.txt",
       "windows": {
         "installer": "StreamWave_{version}_x64-setup.exe",
         "installed_exe": [
@@ -102,6 +112,13 @@
         "appimage": "StreamWave_{version}_amd64.AppImage"
       },
       "macos": {
+        "zip": [
+          "StreamWave_{version}_universal.app.zip"
+        ],
+        "installed_app": [
+          "/Applications/StreamWave.app",
+          "~/Applications/StreamWave.app"
+        ],
         "unavailable": "Not available on Mac yet."
       }
     }

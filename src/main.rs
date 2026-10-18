@@ -44,6 +44,52 @@ fn main() -> eframe::Result<()> {
             }
         }
     }
+    if let Some(id) = args.iter().skip_while(|a| *a != "--install").nth(1) {
+        // Installs (or updates) an app from its latest release, exactly as the Install button
+        // does: same file choice, checksum check and install place. Used by the CI checks.
+        let paths = store::Paths::new();
+        let manifest = manifest::load(&paths.data);
+        let Some(spec) = manifest.apps.iter().find(|a| a.id == *id) else {
+            let _ = writeln!(out, "No app called {id}.");
+            std::process::exit(2);
+        };
+        let mut installed = store::Installed::load(&paths);
+        let previous = installed.apps.get(id).cloned();
+        let tag = match github::latest_tag(&spec.repo) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                let _ = writeln!(out, "{} has no releases yet.", spec.name);
+                std::process::exit(1);
+            }
+            Err(e) => {
+                let _ = writeln!(out, "{e}");
+                std::process::exit(1);
+            }
+        };
+        let prefer_installer = store::Settings::load(&paths).prefer_installer || previous.as_ref().is_some_and(|r| r.kind == store::Kind::Installer);
+        let plan = install::plan(spec, prefer_installer);
+        let _ = writeln!(out, "Installing {} {tag} ({:?})…", spec.name, plan.files());
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut last = String::new();
+        match install::install(spec, &tag, &plan, &paths, previous.as_ref(), &cancel, &mut |phase| {
+            let name = format!("{phase:?}").split([' ', '{']).next().unwrap_or_default().to_string();
+            if name != last {
+                eprintln!("  {name}");
+                last = name;
+            }
+        }) {
+            Ok(record) => {
+                let _ = writeln!(out, "Installed {} {} at {}", spec.name, record.version, record.path.display());
+                installed.apps.insert(id.clone(), record);
+                let _ = installed.save(&paths);
+                return Ok(());
+            }
+            Err(e) => {
+                let _ = writeln!(out, "{e}");
+                std::process::exit(1);
+            }
+        }
+    }
     if args.iter().any(|a| a == "--list-apps" || a == "--uninstall") {
         // What's installed (by Wave Hub or found on this computer), and removing one.
         let paths = store::Paths::new();

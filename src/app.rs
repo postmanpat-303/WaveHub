@@ -163,6 +163,9 @@ struct Shared {
     /// The release file this computer should get when a newer Wave Hub is out
     /// (`Ok(None)`: the release has nothing for it).
     hub_asset: Option<Result<Option<String>, String>>,
+    /// For each app: the file names its plan tries, and which one the latest release has
+    /// (`None`: none of them, e.g. StreamWave before its first Mac build).
+    assets: HashMap<String, (Vec<String>, Option<String>)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -184,6 +187,18 @@ pub struct WaveHub {
     shown_progress: HashMap<String, f32>,
     /// The app whose "Remove …?" box is open.
     confirm_uninstall: Option<String>,
+}
+
+/// What a card says when the latest release has no file for this computer.
+fn no_download_text(spec: &AppSpec) -> String {
+    let custom = if cfg!(target_os = "macos") {
+        spec.macos.as_ref().and_then(|m| m.unavailable.clone())
+    } else if cfg!(target_os = "linux") {
+        spec.linux.as_ref().and_then(|l| l.unavailable.clone())
+    } else {
+        None
+    };
+    custom.unwrap_or_else(|| format!("The latest {} release has no download for {} yet.", spec.name, install::os_label()))
 }
 
 /// Whether Wave Hub can update this install itself. Package-manager and hand-installed Mac
@@ -284,6 +299,7 @@ impl WaveHub {
         let apps = self.manifest.apps.clone();
         let hub_repo = self.manifest.launcher_repo.clone();
         let paths = self.paths.clone();
+        let prefer_installer = self.settings.prefer_installer;
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             find_external(&shared, &paths, &apps);
@@ -294,6 +310,17 @@ impl WaveHub {
                     Ok(None) => Latest::NoReleases,
                     Err(e) => Latest::Error(e),
                 };
+                // Which of the plan's files the release really has, so a card switches on by
+                // itself when a release adds a download (and off when it has none).
+                if let Latest::Found(tag) = &latest {
+                    let record = lock(&shared).installed.apps.get(&app.id).cloned();
+                    let plan = plan_for(&app, prefer_installer, record.as_ref());
+                    if !plan.files().is_empty() {
+                        if let Ok(found) = install::resolve_file(&app.repo, tag, plan.files()) {
+                            lock(&shared).assets.insert(app.id.clone(), (plan.files().to_vec(), found));
+                        }
+                    }
+                }
                 lock(&shared).latest.insert(app.id.clone(), latest);
                 ctx.request_repaint();
             }
@@ -455,15 +482,18 @@ impl WaveHub {
             // Lay each card out in its own fixed-width column, then move down by the tallest.
             let top_left = ui.cursor().min;
             let mut tallest: f32 = 0.0;
+            let mut painted: f32 = 0.0;
             for (i, spec) in row.iter().enumerate() {
                 let min = top_left + vec2(i as f32 * (card_w + gap), 0.0);
                 let rect = egui::Rect::from_min_size(min, vec2(card_w, 2000.0));
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)));
                 let natural = self.card(&mut child, spec, card_w, row_min);
                 tallest = tallest.max(natural);
+                // A short card is still drawn at the minimum card height.
+                painted = painted.max(child.min_rect().height());
             }
             heights.push(tallest);
-            ui.allocate_space(vec2(width, tallest.max(row_min)));
+            ui.allocate_space(vec2(width, tallest.max(row_min).max(painted)));
             ui.add_space(gap);
         }
         if heights != self.row_heights {
@@ -502,7 +532,16 @@ impl WaveHub {
     fn card(&mut self, ui: &mut Ui, spec: &AppSpec, width: f32, row_min: f32) -> f32 {
         let ctx = ui.ctx().clone();
         let accent = Color32::from_rgb(spec.accent[0], spec.accent[1], spec.accent[2]);
-        let plan = plan_for(spec, self.settings.prefer_installer, lock(&self.shared).installed.apps.get(&spec.id));
+        // `waiting`: Wave Hub knows this app's files for this computer, but the latest release
+        // has none of them yet (the card switches on by itself once one appears).
+        let (plan, waiting) = {
+            let s = lock(&self.shared);
+            let plan = plan_for(spec, self.settings.prefer_installer, s.installed.apps.get(&spec.id));
+            match s.assets.get(&spec.id) {
+                Some((files, None)) if !files.is_empty() && files.as_slice() == plan.files() => (Plan::Unavailable(no_download_text(spec)), true),
+                _ => (plan, false),
+            }
+        };
         let (latest, record, job, error, finished, note) = {
             let mut s = lock(&self.shared);
             // Celebrations and notes fade after a few seconds.
@@ -576,7 +615,7 @@ impl WaveHub {
             } else if error.as_ref().is_some_and(|e| e.retry) {
                 ("SOMETHING WENT WRONG", p().bad)
             } else if let Plan::Unavailable(_) = &plan {
-                if installed_v.is_some() { ("INSTALLED", p().good) } else { (if cfg!(target_os = "macos") { "NOT ON MAC YET" } else if cfg!(windows) { "NOT AVAILABLE YET" } else { "WINDOWS ONLY FOR NOW" }, p().muted) }
+                if installed_v.is_some() { ("INSTALLED", p().good) } else { (if cfg!(target_os = "macos") { "NOT ON MAC YET" } else if cfg!(windows) || waiting { "NOT AVAILABLE YET" } else { "WINDOWS ONLY FOR NOW" }, p().muted) }
             } else if update {
                 ("UPDATE AVAILABLE", p().warn)
             } else if installed_v.is_some() {
@@ -689,9 +728,9 @@ impl WaveHub {
                 } else {
                     // Linux can build ChipWave from source; on a Mac there's nothing to build yet,
                     // so just point to the project.
-                    let label = if cfg!(target_os = "macos") { "VIEW ON GITHUB" } else { "BUILD FROM SOURCE" };
+                    let label = if cfg!(target_os = "macos") || waiting { "VIEW ON GITHUB" } else { "BUILD FROM SOURCE" };
                     if main_button(ui, label, p().soft, full, true).clicked() {
-                        crate::links::open(&format!("https://github.com/{}#readme", spec.repo));
+                        crate::links::open(&if waiting { format!("https://github.com/{}/releases/latest", spec.repo) } else { format!("https://github.com/{}#readme", spec.repo) });
                     }
                 }
             } else if update {

@@ -13,12 +13,45 @@ use crate::manifest::{fill, AppSpec};
 use crate::store::{now, Kind, Paths, Record};
 
 /// What Wave Hub would do to install `spec` on this computer.
+/// `files` are release file names to try in order (see [`resolve_file`]).
 #[derive(Clone, Debug)]
 pub enum Plan {
-    AppImage { file: String },
-    Portable { file: String, exe: String },
-    Installer { file: String, exe_candidates: Vec<String>, silent_args: Vec<String>, uninstall_key: Option<String> },
+    AppImage {
+        files: Vec<String>,
+    },
+    /// A zip: Windows portable (`exe` required) or a macOS `.app` (`exe` optional).
+    Portable {
+        files: Vec<String>,
+        exe: Option<String>,
+    },
+    Installer {
+        files: Vec<String>,
+        exe_candidates: Vec<String>,
+        silent_args: Vec<String>,
+        uninstall_key: Option<String>,
+    },
     Unavailable(String),
+}
+
+impl Plan {
+    pub fn files(&self) -> &[String] {
+        match self {
+            Plan::AppImage { files } | Plan::Portable { files, .. } | Plan::Installer { files, .. } => files,
+            Plan::Unavailable(_) => &[],
+        }
+    }
+}
+
+/// The first of `files` that the release `tag` actually has, by asking GitHub about each name
+/// (a HEAD request, no API). `Ok(None)`: none of them is there (yet).
+pub fn resolve_file(repo: &str, tag: &str, files: &[String]) -> Result<Option<String>, String> {
+    for f in files {
+        let name = fill(f, tag);
+        if github::asset_exists(repo, tag, &name)? {
+            return Ok(Some(name));
+        }
+    }
+    Ok(None)
 }
 
 pub fn os_label() -> &'static str {
@@ -38,25 +71,33 @@ pub fn plan(spec: &AppSpec, prefer_installer: bool) -> Plan {
         let Some(w) = &spec.windows else {
             return Plan::Unavailable("No Windows download yet.".into());
         };
-        let installer = w.installer.clone().map(|file| Plan::Installer { file, exe_candidates: w.installed_exe.clone(), silent_args: w.silent_args.clone(), uninstall_key: w.uninstall_key.clone() });
-        let portable = match (&w.portable, &w.exe) {
-            (Some(file), Some(exe)) => Some(Plan::Portable { file: file.clone(), exe: exe.clone() }),
+        let installer = (!w.installer.is_empty()).then(|| Plan::Installer {
+            files: w.installer.clone(),
+            exe_candidates: w.installed_exe.clone(),
+            silent_args: w.silent_args.clone(),
+            uninstall_key: w.uninstall_key.clone(),
+        });
+        let portable = match (w.portable.is_empty(), &w.exe) {
+            (false, Some(exe)) => Some(Plan::Portable { files: w.portable.clone(), exe: Some(exe.clone()) }),
             _ => None,
         };
         let pick = if prefer_installer { installer.or(portable) } else { portable.or(installer) };
         pick.unwrap_or_else(|| Plan::Unavailable("No Windows download yet.".into()))
     } else if cfg!(target_os = "linux") {
         let l = spec.linux.clone().unwrap_or_default();
-        match l.appimage {
-            Some(file) if l.arches.iter().any(|a| a == std::env::consts::ARCH) => Plan::AppImage { file },
-            Some(_) => Plan::Unavailable("No download for this processor yet.".into()),
-            None => Plan::Unavailable(l.unavailable.unwrap_or_else(|| "No Linux download yet.".into())),
+        if l.appimage.is_empty() {
+            Plan::Unavailable(l.unavailable.unwrap_or_else(|| "No Linux download yet.".into()))
+        } else if l.arches.iter().any(|a| a == std::env::consts::ARCH) {
+            Plan::AppImage { files: l.appimage }
+        } else {
+            Plan::Unavailable("No download for this processor yet.".into())
         }
     } else if cfg!(target_os = "macos") {
         let m = spec.macos.clone().unwrap_or_default();
-        match (m.zip, m.exe) {
-            (Some(file), Some(exe)) => Plan::Portable { file, exe },
-            _ => Plan::Unavailable(m.unavailable.unwrap_or_else(|| "No macOS download yet.".into())),
+        if m.zip.is_empty() {
+            Plan::Unavailable(m.unavailable.unwrap_or_else(|| "No macOS download yet.".into()))
+        } else {
+            Plan::Portable { files: m.zip, exe: m.exe }
         }
     } else {
         Plan::Unavailable("Wave Hub supports Windows, Linux and macOS.".into())
@@ -87,25 +128,24 @@ pub fn install(spec: &AppSpec, tag: &str, plan: &Plan, paths: &Paths, previous: 
             return Err(format!("{} is open. Close it first, then try again.", spec.name));
         }
     }
-    let template = match plan {
-        Plan::AppImage { file } | Plan::Portable { file, .. } | Plan::Installer { file, .. } => file,
-        Plan::Unavailable(why) => return Err(why.clone()),
-    };
-    let file = fill(template, tag);
+    if let Plan::Unavailable(why) = plan {
+        return Err(why.clone());
+    }
     report(Phase::Checking);
-    let expected = match &spec.sums {
-        Some(sums) => {
-            let text = github::get_text(&github::download_url(&spec.repo, tag, sums))?;
-            match text {
-                Some(text) => {
-                    Some(github::parse_sums(&text).into_iter().find(|(_, name)| *name == file).map(|(hash, _)| hash).ok_or_else(|| format!("{sums} doesn't list {file}, so it can't be checked."))?)
-                }
-                // Older releases may not have one; install unchecked rather than not at all.
-                None => None,
-            }
-        }
-        None => None,
+    let file = match plan.files() {
+        [one] => fill(one, tag),
+        files => resolve_file(&spec.repo, tag, files)?.ok_or_else(|| format!("This {} release has no download for {} yet.", spec.name, os_label()))?,
     };
+    // The first checksum list the release has. Older releases may not have one; install
+    // unchecked rather than not at all.
+    let mut expected = None;
+    for sums in &spec.sums {
+        if let Some(text) = github::get_text(&github::download_url(&spec.repo, tag, sums))? {
+            let hash = github::parse_sums(&text).into_iter().find(|(_, name)| *name == file).map(|(hash, _)| hash);
+            expected = Some(hash.ok_or_else(|| format!("{sums} doesn't list {file}, so it can't be checked."))?);
+            break;
+        }
+    }
     if cancel.load(std::sync::atomic::Ordering::Relaxed) {
         return Err("Cancelled.".into());
     }
@@ -133,7 +173,7 @@ pub fn install(spec: &AppSpec, tag: &str, plan: &Plan, paths: &Paths, previous: 
     let record = |kind, path| Record { version: version.clone(), tag: tag.to_string(), kind, path, installed_at: now(), external: false };
     let result = match plan {
         Plan::AppImage { .. } => install_appimage(spec, &part, paths).map(|p| record(Kind::AppImage, p)),
-        Plan::Portable { exe, .. } => install_portable(spec, &part, exe, paths).map(|p| record(Kind::PortableZip, p)),
+        Plan::Portable { exe, .. } => install_portable(spec, &part, exe.as_deref(), paths).map(|p| record(Kind::PortableZip, p)),
         Plan::Installer { exe_candidates, silent_args, uninstall_key, .. } => {
             report(Phase::RunningInstaller);
             run_installer(spec, &part, &file, silent_args, exe_candidates, uninstall_key.as_deref()).map(|p| record(Kind::Installer, p))
@@ -146,6 +186,11 @@ pub fn install(spec: &AppSpec, tag: &str, plan: &Plan, paths: &Paths, previous: 
             // Moving between AppImage/portable and the installer leaves the old copy behind;
             // tidy it if it was ours.
             if prev.kind != Kind::Installer && result.as_ref().is_ok_and(|r| r.kind == Kind::Installer) {
+                let _ = std::fs::remove_dir_all(paths.apps().join(&spec.id));
+            }
+            // A Mac app that 0.2.2 or older kept in Wave Hub's own folder now lives in
+            // ~/Applications: remove the old copy.
+            if cfg!(target_os = "macos") && result.as_ref().is_ok_and(|r| !r.path.starts_with(paths.apps())) && prev.path.starts_with(paths.apps()) {
                 let _ = std::fs::remove_dir_all(paths.apps().join(&spec.id));
             }
         }
@@ -174,14 +219,15 @@ fn install_appimage(spec: &AppSpec, part: &Path, paths: &Paths) -> Result<PathBu
     Ok(target)
 }
 
-fn install_portable(spec: &AppSpec, zip_path: &Path, exe: &str, paths: &Paths) -> Result<PathBuf, String> {
+fn install_portable(spec: &AppSpec, zip_path: &Path, exe: Option<&str>, paths: &Paths) -> Result<PathBuf, String> {
     let dir = app_dir(spec, paths);
+    let mut exe = exe.map(str::to_string);
     let staging = paths.apps().join(format!("{}.new", spec.id));
     let old = paths.apps().join(format!("{}.old", spec.id));
     let _ = std::fs::remove_dir_all(&staging);
     let _ = std::fs::remove_dir_all(&old);
     std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
-    let unpack = || -> Result<(), String> {
+    let mut unpack = || -> Result<(), String> {
         let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("the zip can't be opened ({e})"))?;
         for i in 0..archive.len() {
@@ -207,14 +253,26 @@ fn install_portable(spec: &AppSpec, zip_path: &Path, exe: &str, paths: &Paths) -
                 std::fs::set_permissions(&out, std::fs::Permissions::from_mode(mode & 0o777)).map_err(|e| e.to_string())?;
             }
         }
-        if !staging.join(exe).is_file() {
-            return Err(format!("the zip doesn't contain {exe}"));
+        // A Mac zip: find the .app and its program if the manifest doesn't say, or if it
+        // has moved.
+        if exe.as_ref().is_none_or(|e| !staging.join(e).is_file()) {
+            if let Some(found) = find_app_program(&staging) {
+                exe = Some(found);
+            }
         }
-        Ok(())
+        match &exe {
+            Some(e) if staging.join(e).is_file() => Ok(()),
+            Some(e) => Err(format!("the zip doesn't contain {e}")),
+            None => Err("the zip doesn't contain a program Wave Hub can start".into()),
+        }
     };
     if let Err(e) = unpack() {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
+    }
+    let exe = exe.unwrap_or_default();
+    if cfg!(target_os = "macos") {
+        return install_mac_app(spec, &staging, &exe, paths, &mac_apps_dir());
     }
     // Swap folders: old -> .old, new -> in place, then delete .old. Settings live elsewhere, so
     // nothing of the user's is lost.
@@ -227,6 +285,83 @@ fn install_portable(spec: &AppSpec, zip_path: &Path, exe: &str, paths: &Paths) -
     }
     let _ = std::fs::remove_dir_all(&old);
     Ok(dir.join(exe))
+}
+
+/// `X.app/Contents/MacOS/X` for the first `.app` in `dir` (or one folder down), from its
+/// Info.plist's CFBundleExecutable, or the only program in `Contents/MacOS`.
+pub(crate) fn find_app_program(dir: &Path) -> Option<String> {
+    let mut apps: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let p = entry.path();
+        if p.extension().is_some_and(|e| e == "app") && p.is_dir() {
+            apps.push(p);
+        } else if p.is_dir() {
+            for sub in std::fs::read_dir(&p).into_iter().flatten().flatten() {
+                if sub.path().extension().is_some_and(|e| e == "app") && sub.path().is_dir() {
+                    apps.push(sub.path());
+                }
+            }
+        }
+    }
+    apps.sort();
+    let program = app_program(&apps.into_iter().next()?)?;
+    Some(program.strip_prefix(dir).ok()?.to_string_lossy().into_owned())
+}
+
+/// The program inside a `.app`: Info.plist's CFBundleExecutable, or the only file in
+/// `Contents/MacOS`.
+pub(crate) fn app_program(app: &Path) -> Option<PathBuf> {
+    let macos = app.join("Contents/MacOS");
+    let from_plist = std::fs::read_to_string(app.join("Contents/Info.plist")).ok().and_then(|t| {
+        let after = t.split("<key>CFBundleExecutable</key>").nth(1)?;
+        Some(after.split("<string>").nth(1)?.split("</string>").next()?.trim().to_string())
+    });
+    let program = from_plist.filter(|n| macos.join(n).is_file()).or_else(|| {
+        let files: Vec<_> = std::fs::read_dir(&macos).ok()?.flatten().filter(|e| e.path().is_file()).collect();
+        (files.len() == 1).then(|| files[0].file_name().to_string_lossy().into_owned())
+    })?;
+    Some(macos.join(program))
+}
+
+/// Where Mac apps go: `~/Applications`, the per-user Applications folder (no admin needed).
+/// `WAVEHUB_MAC_APPS` overrides it for tests.
+pub(crate) fn mac_apps_dir() -> PathBuf {
+    std::env::var_os("WAVEHUB_MAC_APPS").map(PathBuf::from).unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Applications"))
+}
+
+/// Moves the unpacked `.app` from `staging` into `~/Applications`, replacing an older copy.
+fn install_mac_app(spec: &AppSpec, staging: &Path, exe: &str, paths: &Paths, apps: &Path) -> Result<PathBuf, String> {
+    let rel = Path::new(exe);
+    let parts: Vec<_> = rel.components().collect();
+    let i = parts.iter().position(|c| c.as_os_str().to_string_lossy().ends_with(".app")).ok_or("the zip has no .app")?;
+    let app_rel: PathBuf = parts[..=i].iter().collect();
+    let app_name = app_rel.file_name().ok_or("the zip has no .app")?.to_owned();
+    let inner = rel.strip_prefix(&app_rel).map_err(|_| "the zip has no .app".to_string())?.to_path_buf();
+    std::fs::create_dir_all(apps).map_err(|e| format!("couldn't make {} ({e})", apps.display()))?;
+    let target = apps.join(&app_name);
+    let old = paths.apps().join(format!("{}.old.app", spec.id));
+    let _ = std::fs::remove_dir_all(&old);
+    let cleanup = || {
+        let _ = std::fs::remove_dir_all(staging);
+    };
+    if target.exists() {
+        // Move the old copy aside (into Wave Hub's folder, so it's out of Applications).
+        if std::fs::rename(&target, &old).is_err() {
+            // Different disk: copy-free fallback is to delete it.
+            if let Err(e) = std::fs::remove_dir_all(&target) {
+                cleanup();
+                return Err(format!("couldn't replace {} ({e}). Is {} open?", target.display(), spec.name));
+            }
+        }
+    }
+    if let Err(e) = std::fs::rename(staging.join(&app_rel), &target) {
+        let _ = std::fs::rename(&old, &target);
+        cleanup();
+        return Err(format!("couldn't move {} into {} ({e})", app_name.to_string_lossy(), apps.display()));
+    }
+    cleanup();
+    let _ = std::fs::remove_dir_all(&old);
+    Ok(target.join(inner))
 }
 
 fn run_installer(spec: &AppSpec, part: &Path, file: &str, args: &[String], candidates: &[String], key: Option<&str>) -> Result<PathBuf, String> {
@@ -303,37 +438,6 @@ pub(crate) fn installer_command(setup: &Path, args: &[String]) -> Command {
     let mut cmd = Command::new(setup);
     cmd.args(args);
     cmd
-}
-
-#[cfg(test)]
-mod tests {
-    /// Unpacks a real macOS app zip the way Wave Hub does on a Mac and checks the program
-    /// keeps its "can run" bit. Run with
-    /// `WAVEHUB_TEST_MAC_ZIP=BigWaveRadio-0.9.6-macos-universal.zip cargo test -- --ignored`.
-    #[test]
-    #[ignore]
-    #[cfg(unix)]
-    fn unpacks_a_mac_app_zip() {
-        use std::os::unix::fs::PermissionsExt;
-        let zip = std::env::var("WAVEHUB_TEST_MAC_ZIP").expect("set WAVEHUB_TEST_MAC_ZIP");
-        let m: crate::manifest::Manifest = serde_json::from_str(include_str!("../apps.json")).unwrap();
-        let spec = m.apps.iter().find(|a| a.id == "bigwave-radio").unwrap();
-        let exe = spec.macos.as_ref().unwrap().exe.clone().unwrap();
-        let paths = crate::store::Paths { data: std::env::temp_dir().join(format!("wavehub-mac-{}", std::process::id())) };
-        let path = super::install_portable(spec, std::path::Path::new(&zip), &exe, &paths).unwrap();
-        assert!(path.ends_with("BigWave Radio.app/Contents/MacOS/BigWaveRadio"));
-        assert!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o111 != 0);
-        assert!(path.parent().unwrap().parent().unwrap().join("Info.plist").is_file());
-        let _ = std::fs::remove_dir_all(&paths.data);
-    }
-
-    #[test]
-    fn display_icon() {
-        let out = "\r\nHKEY_CURRENT_USER\\Software\\...\\StreamWave\r\n    DisplayIcon    REG_SZ    \"C:\\Users\\d\\AppData\\Local\\StreamWave\\StreamWave.exe\"\r\n";
-        assert_eq!(super::parse_display_icon(out).unwrap().to_string_lossy(), r"C:\Users\d\AppData\Local\StreamWave\StreamWave.exe");
-        let out = "    DisplayIcon    REG_SZ    C:\\Program Files\\BigWave Radio\\BigWaveRadio.exe,0";
-        assert_eq!(super::parse_display_icon(out).unwrap().to_string_lossy(), r"C:\Program Files\BigWave Radio\BigWaveRadio.exe");
-    }
 }
 
 /// Starts the app on its own; it keeps running if Wave Hub closes.
@@ -452,4 +556,76 @@ pub fn reveal(path: &Path) {
         "xdg-open"
     };
     let _ = Command::new(program).arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    /// Unpacks a real macOS app zip the way Wave Hub does on a Mac and checks the program
+    /// keeps its "can run" bit. Run with
+    /// `WAVEHUB_TEST_MAC_ZIP=BigWaveRadio-0.9.6-macos-universal.zip cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    #[cfg(unix)]
+    fn unpacks_a_mac_app_zip() {
+        use std::os::unix::fs::PermissionsExt;
+        let zip = std::env::var("WAVEHUB_TEST_MAC_ZIP").expect("set WAVEHUB_TEST_MAC_ZIP");
+        let m: crate::manifest::Manifest = serde_json::from_str(include_str!("../apps.json")).unwrap();
+        let spec = m.apps.iter().find(|a| a.id == "bigwave-radio").unwrap();
+        let exe = spec.macos.as_ref().unwrap().exe.clone().unwrap();
+        let paths = crate::store::Paths { data: std::env::temp_dir().join(format!("wavehub-mac-{}", std::process::id())) };
+        let path = super::install_portable(spec, std::path::Path::new(&zip), Some(&exe), &paths).unwrap();
+        assert!(path.ends_with("BigWave Radio.app/Contents/MacOS/BigWaveRadio"));
+        assert!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o111 != 0);
+        assert!(path.parent().unwrap().parent().unwrap().join("Info.plist").is_file());
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    /// A real ChipWave Tracker Mac zip (WAVEHUB_TEST_CW_ZIP): the program is found from its
+    /// Info.plist without being named.
+    #[test]
+    #[ignore]
+    #[cfg(unix)]
+    fn finds_chipwave_program() {
+        let zip = std::env::var("WAVEHUB_TEST_CW_ZIP").expect("set WAVEHUB_TEST_CW_ZIP");
+        let m: crate::manifest::Manifest = serde_json::from_str(include_str!("../apps.json")).unwrap();
+        let spec = m.apps.iter().find(|a| a.id == "chipwave-tracker").unwrap();
+        let paths = crate::store::Paths { data: std::env::temp_dir().join(format!("wavehub-cw-{}", std::process::id())) };
+        let path = super::install_portable(spec, std::path::Path::new(&zip), None, &paths).unwrap();
+        assert!(path.ends_with("ChipWave.app/Contents/MacOS/ChipWave"), "{}", path.display());
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
+    /// The Mac install steps, run on any OS: find the .app's program from Info.plist, then
+    /// move the .app into an Applications folder, replacing an older copy.
+    #[test]
+    #[cfg(unix)]
+    fn mac_app_into_applications() {
+        let m: crate::manifest::Manifest = serde_json::from_str(include_str!("../apps.json")).unwrap();
+        let spec = m.apps.iter().find(|a| a.id == "streamwave").unwrap();
+        let root = std::env::temp_dir().join(format!("wavehub-macapp-{}", std::process::id()));
+        let paths = crate::store::Paths { data: root.join("data") };
+        let apps = root.join("Applications");
+        for round in 0..2 {
+            let staging = paths.apps().join("streamwave.new");
+            let macos = staging.join("StreamWave.app/Contents/MacOS");
+            std::fs::create_dir_all(&macos).unwrap();
+            std::fs::write(macos.join("stream-wave"), format!("v{round}")).unwrap();
+            std::fs::write(staging.join("StreamWave.app/Contents/Info.plist"), "<dict>\n<key>CFBundleExecutable</key>\n<string>stream-wave</string>\n</dict>").unwrap();
+            let exe = super::find_app_program(&staging).unwrap();
+            assert_eq!(exe, "StreamWave.app/Contents/MacOS/stream-wave");
+            let path = super::install_mac_app(spec, &staging, &exe, &paths, &apps).unwrap();
+            assert_eq!(path, apps.join("StreamWave.app/Contents/MacOS/stream-wave"));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("v{round}"));
+            assert!(!staging.exists());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn display_icon() {
+        let out = "\r\nHKEY_CURRENT_USER\\Software\\...\\StreamWave\r\n    DisplayIcon    REG_SZ    \"C:\\Users\\d\\AppData\\Local\\StreamWave\\StreamWave.exe\"\r\n";
+        assert_eq!(super::parse_display_icon(out).unwrap().to_string_lossy(), r"C:\Users\d\AppData\Local\StreamWave\StreamWave.exe");
+        let out = "    DisplayIcon    REG_SZ    C:\\Program Files\\BigWave Radio\\BigWaveRadio.exe,0";
+        assert_eq!(super::parse_display_icon(out).unwrap().to_string_lossy(), r"C:\Program Files\BigWave Radio\BigWaveRadio.exe");
+    }
 }

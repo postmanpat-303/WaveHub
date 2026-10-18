@@ -66,6 +66,37 @@ jobs:
           if kill -0 $PID; then echo "still running after 10 s"; kill $PID; else echo "app exited early"; cat "$RUNNER_TEMP/run.log"; exit 1; fi
           cat "$RUNNER_TEMP/run.log"
 
+      - name: Install ChipWave Tracker from its real release, launch it, remove it
+        run: |
+          BIN="$PWD/dist/Wave Hub.app/Contents/MacOS/WaveHub"
+          APP="$HOME/Applications/ChipWave.app"
+          "$BIN" --install chipwave-tracker | tee "$RUNNER_TEMP/cw-install.log"
+          grep -q "Installed ChipWave Tracker" "$RUNNER_TEMP/cw-install.log"
+          test -x "$APP/Contents/MacOS/ChipWave"
+          plutil -p "$APP/Contents/Info.plist" | grep -E 'CFBundleExecutable|CFBundleShortVersionString'
+          lipo -archs "$APP/Contents/MacOS/ChipWave" || true
+          codesign -dv "$APP" 2>&1 || true
+          "$BIN" --list-apps | tee "$RUNNER_TEMP/cw-list.log"
+          grep -q "chipwave-tracker: .*Applications/ChipWave.app" "$RUNNER_TEMP/cw-list.log"
+          open "$APP"
+          sleep 12
+          screencapture -x "$RUNNER_TEMP/chipwave-launch.png" || true
+          if pgrep -f "ChipWave.app/Contents/MacOS/ChipWave"; then echo "ChipWave is running"; else echo "ChipWave did not start"; log show --last 2m --predicate 'process == "ChipWave"' | tail -40 || true; exit 1; fi
+          pkill -f "ChipWave.app/Contents/MacOS/ChipWave" || true
+          sleep 3
+          "$BIN" --uninstall chipwave-tracker
+          test ! -e "$APP"
+          "$BIN" --list-apps | grep -q "chipwave-tracker: not installed"
+
+      - name: BigWave Radio (checksum-checked) and StreamWave (no Mac file yet)
+        run: |
+          BIN="$PWD/dist/Wave Hub.app/Contents/MacOS/WaveHub"
+          "$BIN" --install bigwave-radio | tee "$RUNNER_TEMP/bw.log"
+          test -d "$HOME/Applications/BigWave Radio.app"
+          "$BIN" --uninstall bigwave-radio
+          test ! -e "$HOME/Applications/BigWave Radio.app"
+          if "$BIN" --install streamwave > "$RUNNER_TEMP/sw.log" 2>&1; then cat "$RUNNER_TEMP/sw.log"; echo "::notice::StreamWave now has a Mac download"; "$BIN" --uninstall streamwave; else cat "$RUNNER_TEMP/sw.log"; grep -q "no download for macOS" "$RUNNER_TEMP/sw.log"; fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: WaveHub-${{ steps.ver.outputs.ver }}-macos-universal
@@ -73,6 +104,7 @@ jobs:
             dist/v*/WaveHub-*-macos-universal.dmg
             dist/v*/WaveHub-*-macos-universal.zip
             ${{ runner.temp }}/macos-launch.png
+            ${{ runner.temp }}/chipwave-launch.png
 
       - name: Attach to the release and update SHA256SUMS.txt
         if: inputs.release_tag != ''

@@ -28,15 +28,38 @@ pub struct AppSpec {
     /// Card accent colour.
     #[serde(default = "default_accent")]
     pub accent: [u8; 3],
-    /// Checksum list published with each release, if any.
-    #[serde(default)]
-    pub sums: Option<String>,
+    /// Checksum lists to look for in each release, first found wins. Downloads are checked
+    /// against it when the release has one.
+    #[serde(default = "default_sums", deserialize_with = "names")]
+    pub sums: Vec<String>,
     #[serde(default)]
     pub windows: Option<WindowsSpec>,
     #[serde(default)]
     pub linux: Option<LinuxSpec>,
     #[serde(default)]
     pub macos: Option<MacSpec>,
+}
+
+fn default_sums() -> Vec<String> {
+    vec!["SHA256SUMS.txt".into(), "SHA256SUMS".into()]
+}
+
+/// A release file name, or a list of names to try in order (the first one the release has
+/// is used), so a release that renames its files or adds a new one doesn't need a new
+/// Wave Hub.
+fn names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+        None(()),
+    }
+    Ok(match OneOrMany::deserialize(d)? {
+        OneOrMany::One(s) => vec![s],
+        OneOrMany::Many(v) => v,
+        OneOrMany::None(()) => Vec::new(),
+    })
 }
 
 fn default_accent() -> [u8; 3] {
@@ -47,11 +70,13 @@ fn default_accent() -> [u8; 3] {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct WindowsSpec {
     /// Portable zip with the program at its root.
-    pub portable: Option<String>,
+    #[serde(default, deserialize_with = "names")]
+    pub portable: Vec<String>,
     /// The program inside the portable zip.
     pub exe: Option<String>,
     /// The official setup program.
-    pub installer: Option<String>,
+    #[serde(default, deserialize_with = "names")]
+    pub installer: Vec<String>,
     /// Where the official installer puts the program. `{localappdata}` and `{programfiles}` are
     /// filled in.
     #[serde(default)]
@@ -68,7 +93,8 @@ pub struct WindowsSpec {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct LinuxSpec {
     /// May contain `{arch}` (`x86_64` or `aarch64`).
-    pub appimage: Option<String>,
+    #[serde(default, deserialize_with = "names")]
+    pub appimage: Vec<String>,
     /// Processors the AppImage is built for.
     #[serde(default = "default_arches")]
     pub arches: Vec<String>,
@@ -84,11 +110,15 @@ fn default_arches() -> Vec<String> {
     vec!["x86_64".into()]
 }
 
-/// A zip with the `.app` at its root (as `ditto -c -k --keepParent` makes it).
+/// A zip with the `.app` at its root (as `ditto -c -k --keepParent` makes it). Wave Hub
+/// installs the `.app` into `~/Applications` (just for this user, no admin password).
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct MacSpec {
-    pub zip: Option<String>,
+    #[serde(default, deserialize_with = "names")]
+    pub zip: Vec<String>,
     /// The program inside the zip, e.g. `BigWave Radio.app/Contents/MacOS/BigWaveRadio`.
+    /// Optional: without it, the zip's `.app` is found and its Info.plist says which program
+    /// to start.
     pub exe: Option<String>,
     pub unavailable: Option<String>,
     /// Where the app's own .dmg puts it, e.g. `/Applications/BigWave Radio.app`; `~` is the
@@ -114,6 +144,16 @@ pub fn load(data_dir: &std::path::Path) -> Manifest {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn names_one_or_many() {
+        let m: super::Manifest = serde_json::from_str(r#"{"launcher_repo":"a/b","community_url":"x","apps":[{"id":"x","name":"X","description":"","repo":"a/x","macos":{"zip":["X-{version}.zip","X.zip"]},"windows":{"portable":"X-{version}.zip","exe":"X.exe"},"linux":{"appimage":null}}]}"#).unwrap();
+        let a = &m.apps[0];
+        assert_eq!(a.macos.as_ref().unwrap().zip, ["X-{version}.zip", "X.zip"]);
+        assert_eq!(a.windows.as_ref().unwrap().portable, ["X-{version}.zip"]);
+        assert!(a.linux.as_ref().unwrap().appimage.is_empty());
+        assert_eq!(a.sums, ["SHA256SUMS.txt", "SHA256SUMS"]);
+    }
+
     #[test]
     fn built_in_manifest_parses() {
         let m: super::Manifest = serde_json::from_str(super::BUILT_IN).unwrap();
