@@ -65,7 +65,7 @@
         "unavailable": "Windows only for now. On Linux, build it from source."
       },
       "macos": {
-        "unavailable": "Windows only for now."
+        "unavailable": "Not available on Mac yet."
       }
     },
     {
@@ -95,7 +95,7 @@
         "appimage": "StreamWave_{version}_amd64.AppImage"
       },
       "macos": {
-        "unavailable": "Windows and Linux only for now."
+        "unavailable": "Not available on Mac yet."
       }
     }
   ]

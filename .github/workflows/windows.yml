@@ -1,0 +1,150 @@
+name: Windows
+
+# Windows x64 with Microsoft's toolchain (x86_64-pc-windows-msvc), C runtime linked in
+# (+crt-static), so WaveHub.exe needs no extra DLLs. Produces:
+#   WaveHub-<v>-setup-x64.exe     NSIS per-user setup (installer/wavehub.nsi)
+#   WaveHub-<v>-windows-x64.zip   portable
+#   WaveHub.exe                   the bare program, for 0.1.0's update link
+# Run it by hand (Actions > Windows > Run workflow). With release_tag set, the files are
+# attached to that release and SHA256SUMS.txt is updated; empty = artifacts only.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach the files to this release tag (e.g. v0.2.1); empty = artifacts only"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Version
+        id: ver
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          "ver=$v" >> $env:GITHUB_OUTPUT
+          "Wave Hub $v"
+
+      - name: Tests
+        run: cargo test --locked --release --target x86_64-pc-windows-msvc
+
+      - name: Build
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc
+
+      - name: Check the program (no extra DLLs, version info, manifest)
+        run: |
+          $exe = "target\x86_64-pc-windows-msvc\release\wave-hub.exe"
+          $deps = dumpbin /nologo /dependents $exe | Select-String '\.dll' | ForEach-Object { $_.Line.Trim() }
+          $deps
+          $bad = $deps | Where-Object { $_ -match '^(vcruntime|msvcp|libunwind|libgcc|libwinpthread|ucrtbase)' }
+          if ($bad) { throw "unexpected DLLs: $bad" }
+          $vi = (Get-Item $exe).VersionInfo
+          $vi | Format-List FileDescription, ProductName, CompanyName, FileVersion, OriginalFilename, LegalCopyright
+          if ($vi.FileDescription -ne "Wave Hub") { throw "version info missing" }
+          $m = Select-String -Path $exe -Pattern 'requestedExecutionLevel level="asInvoker"' -SimpleMatch -Encoding ascii
+          if (-not $m) { throw "manifest missing" }
+          "manifest: asInvoker"
+
+      - name: Package (zip + NSIS setup)
+        run: |
+          $v = "${{ steps.ver.outputs.ver }}"
+          $out = "dist\v$v"; New-Item -ItemType Directory -Force $out, dist\pkg | Out-Null
+          Copy-Item target\x86_64-pc-windows-msvc\release\wave-hub.exe dist\pkg\WaveHub.exe
+          (Get-Content packaging\windows-README.txt | Select-Object -Skip 1) | Set-Variable rest
+          @("Wave Hub $v - Windows x64") + $rest | Set-Content dist\pkg\README.txt
+          Copy-Item LICENSE dist\pkg\LICENSE.txt
+          Copy-Item assets\fonts\OFL-Poppins.txt dist\pkg\OFL-Poppins.txt
+          Compress-Archive -Path dist\pkg\WaveHub.exe, dist\pkg\README.txt, dist\pkg\LICENSE.txt, dist\pkg\OFL-Poppins.txt -DestinationPath "$out\WaveHub-$v-windows-x64.zip" -CompressionLevel Optimal
+          Copy-Item dist\pkg\WaveHub.exe "$out\WaveHub.exe"
+          choco install nsis -y --no-progress | Out-Null
+          $parts = $v.Split('.') + @('0','0','0','0')
+          $vi = ($parts[0..3] -join '.')
+          Push-Location installer
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /V2 "/DVERSION=$v" "/DVIVERSION=$vi" "/DPKGDIR=..\dist\pkg" "/DOUTFILE=..\$out\WaveHub-$v-setup-x64.exe" wavehub.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
+          Pop-Location
+          Get-ChildItem $out | Format-Table Name, Length
+
+      - name: Smoke test the portable zip (exe alone, no DLLs next to it)
+        run: |
+          $v = "${{ steps.ver.outputs.ver }}"
+          $t = Join-Path $env:RUNNER_TEMP portable
+          Expand-Archive "dist\v$v\WaveHub-$v-windows-x64.zip" $t
+          $p = Start-Process "$t\WaveHub.exe" -ArgumentList '--update-info' -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$t\info.txt"
+          Get-Content "$t\info.txt"
+          if (-not (Select-String "$t\info.txt" -Pattern 'installed as: Windows portable' -Quiet)) { throw "portable not detected" }
+
+      - name: Smoke test the setup (silent per-user install, launch, uninstall)
+        run: |
+          $v = "${{ steps.ver.outputs.ver }}"
+          $p = Start-Process "dist\v$v\WaveHub-$v-setup-x64.exe" -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "setup exit $($p.ExitCode)" }
+          $dir = "$env:LOCALAPPDATA\Programs\Wave Hub"
+          Get-ChildItem $dir | Format-Table Name, Length
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Wave Hub\Wave Hub.lnk")) { throw "no Start menu shortcut" }
+          Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub' | Format-List DisplayName, DisplayVersion, Publisher, DisplayIcon
+          Start-Process "$dir\WaveHub.exe" -ArgumentList '--update-info' -Wait -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\info2.txt"
+          Get-Content "$env:RUNNER_TEMP\info2.txt"
+          if (-not (Select-String "$env:RUNNER_TEMP\info2.txt" -Pattern 'installed as: Windows setup' -Quiet)) { throw "setup not detected" }
+          $app = Start-Process "$dir\WaveHub.exe" -PassThru
+          Start-Sleep 10
+          if ($app.HasExited) { throw "Wave Hub exited early ($($app.ExitCode))" }
+          "still running after 10 s"
+          Stop-Process $app
+          Start-Sleep 2
+          Start-Process "$dir\Uninstall.exe" -ArgumentList '/S' -Wait
+          Start-Sleep 5
+          if (Test-Path "$dir\WaveHub.exe") { throw "uninstall left the program behind" }
+          "uninstalled"
+
+      - name: Microsoft Defender scan (information only)
+        continue-on-error: true
+        run: |
+          $v = "${{ steps.ver.outputs.ver }}"
+          $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+          if (Test-Path $mp) {
+            & $mp -SignatureUpdate | Select-Object -Last 2
+            foreach ($f in Get-ChildItem "dist\v$v\*") { "== $($f.Name)"; & $mp -Scan -ScanType 3 -File $f.FullName -DisableRemediation | Select-Object -Last 3 }
+          } else { "Defender command-line scanner not found" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WaveHub-${{ steps.ver.outputs.ver }}-windows-x64
+          path: dist/v*/*
+          if-no-files-found: error
+
+      - name: Attach to the release and update SHA256SUMS.txt
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          VER=${{ steps.ver.outputs.ver }}
+          test "$TAG" = "v$VER" || { echo "tag $TAG does not match Cargo version $VER"; exit 1; }
+          cd "dist/v$VER"
+          F="WaveHub-$VER-setup-x64.exe WaveHub-$VER-windows-x64.zip WaveHub.exe"
+          gh release upload "$TAG" --clobber $F
+          gh release download "$TAG" --pattern SHA256SUMS.txt --clobber
+          grep -v -E ' (WaveHub-[^ ]*-setup-x64\.exe|WaveHub-[^ ]*-windows-x64\.zip|WaveHub\.exe)$' SHA256SUMS.txt > sums.new || true
+          sha256sum $F >> sums.new
+          sort -k2 sums.new > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$TAG" --clobber SHA256SUMS.txt

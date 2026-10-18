@@ -489,7 +489,7 @@ impl WaveHub {
             } else if error.as_ref().is_some_and(|e| e.retry) {
                 ("SOMETHING WENT WRONG", p().bad)
             } else if let Plan::Unavailable(_) = &plan {
-                if installed_v.is_some() { ("INSTALLED", p().good) } else { (if cfg!(windows) { "NOT AVAILABLE YET" } else { "WINDOWS ONLY FOR NOW" }, p().muted) }
+                if installed_v.is_some() { ("INSTALLED", p().good) } else { (if cfg!(target_os = "macos") { "NOT ON MAC YET" } else if cfg!(windows) { "NOT AVAILABLE YET" } else { "WINDOWS ONLY FOR NOW" }, p().muted) }
             } else if update {
                 ("UPDATE AVAILABLE", p().warn)
             } else if installed_v.is_some() {
@@ -571,8 +571,13 @@ impl WaveHub {
                     if main_button(ui, "OPEN", accent, full, true).clicked() {
                         self.open(spec, &r.path);
                     }
-                } else if main_button(ui, "BUILD FROM SOURCE", p().soft, full, true).clicked() {
-                    ctx.open_url(egui::OpenUrl::new_tab(format!("https://github.com/{}#readme", spec.repo)));
+                } else {
+                    // Linux can build ChipWave from source; on a Mac there's nothing to build yet,
+                    // so just point to the project.
+                    let label = if cfg!(target_os = "macos") { "VIEW ON GITHUB" } else { "BUILD FROM SOURCE" };
+                    if main_button(ui, label, p().soft, full, true).clicked() {
+                        ctx.open_url(egui::OpenUrl::new_tab(format!("https://github.com/{}#readme", spec.repo)));
+                    }
                 }
             } else if update {
                 let label = format!("UPDATE TO {}", latest_v.clone().unwrap_or_default());

@@ -108,13 +108,15 @@ You need Rust ([rustup.rs](https://rustup.rs)).
 
 ```sh
 cargo run --release              # build and run on this computer
-scripts/release.sh               # every Windows and Linux file + SHA256SUMS.txt into dist/v<version>/
+scripts/release.sh               # the Linux files + SHA256SUMS.txt into dist/v<version>/
 scripts/test-packages.sh         # install-and-run checks for those files (Linux, Wine, qemu)
 ```
 
 `scripts/release.sh` lists the tools it needs (cargo-zigbuild, cargo-deb, cargo-generate-rpm,
-mingw-w64, NSIS, makepkg, appimagetool). The macOS files are built on GitHub by
-[`.github/workflows/macos.yml`](.github/workflows/macos.yml), run by hand for a release.
+mingw-w64, NSIS, makepkg, appimagetool). The Windows files are built on GitHub with Microsoft's
+toolchain by [`.github/workflows/windows.yml`](.github/workflows/windows.yml) (one `WaveHub.exe`,
+no extra DLLs), and the macOS files by [`.github/workflows/macos.yml`](.github/workflows/macos.yml);
+both are run by hand for a release.
 Release file names must keep the patterns above, because Wave Hub's own update check looks for them.
 
 ## 💛 Thank you, storytold
