@@ -81,6 +81,45 @@ jobs:
           Pop-Location
           Get-ChildItem $out | Format-Table Name, Length
 
+      - name: Icons (small sizes stored as BMP, so Explorer shows the elephant)
+        run: |
+          $v = "${{ steps.ver.outputs.ver }}"
+          python -m pip install --quiet pefile
+          python scripts/check-ico.py assets/icons/wavehub.ico "dist\v$v\WaveHub.exe" "dist\v$v\WaveHub-$v-setup-x64.exe"
+          if ($LASTEXITCODE -ne 0) { throw "an icon has PNG small frames" }
+          $p = Start-Process "dist\v$v\WaveHub-$v-setup-x64.exe" -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "setup exit $($p.ExitCode)" }
+          $dir = "$env:LOCALAPPDATA\Programs\Wave Hub"
+          python scripts/check-ico.py "$dir\WaveHub.exe" "$dir\Uninstall.exe"
+          if ($LASTEXITCODE -ne 0) { throw "an installed icon has PNG small frames" }
+          (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub').DisplayIcon
+
+      - name: Explorer screenshot of the downloads (information only)
+        continue-on-error: true
+        run: |
+          $v = "${{ steps.ver.outputs.ver }}"
+          $show = Join-Path $env:RUNNER_TEMP 'icons'
+          New-Item -ItemType Directory -Force $show | Out-Null
+          Copy-Item "dist\v$v\WaveHub.exe", "dist\v$v\WaveHub-$v-setup-x64.exe", "$env:LOCALAPPDATA\Programs\Wave Hub\Uninstall.exe" $show
+          # Medium icons in this folder: Explorer reads the 48 px frame; the details pane uses 16 px.
+          $shell = New-Object -ComObject Shell.Application
+          Start-Process explorer.exe $show
+          Start-Sleep 6
+          foreach ($w in $shell.Windows()) { try { if ($w.Document.Folder.Self.Path -eq $show) { $w.Document.CurrentViewMode = 1; $w.Document.IconSize = 48 } } catch {} }
+          Start-Sleep 3
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$env:RUNNER_TEMP\explorer-icons.png")
+          foreach ($w in $shell.Windows()) { try { if ($w.Document.Folder.Self.Path -eq $show) { $w.Document.CurrentViewMode = 4 } } catch {} }
+          Start-Sleep 3
+          $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$env:RUNNER_TEMP\explorer-details.png")
+          Start-Process "$env:LOCALAPPDATA\Programs\Wave Hub\Uninstall.exe" -ArgumentList '/S' -Wait
+          Start-Sleep 4
+
       - name: Smoke test the portable zip (exe alone, no DLLs next to it)
         run: |
           $v = "${{ steps.ver.outputs.ver }}"
@@ -164,6 +203,32 @@ jobs:
             if ($p.ExitCode -ne 0) { throw "$id did not uninstall (exit $($p.ExitCode))" }
           }
 
+      - name: ChipWave Tracker installed with its own setup is found and removed (publisher Del (postmanpat))
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.ver.outputs.ver }}"
+          $hub = "dist\v$v\WaveHub.exe"
+          $tag = gh release view -R postmanpat-303/ChipWaveTracker --json tagName -q .tagName
+          "ChipWave latest: $tag"
+          $setup = "$env:RUNNER_TEMP\chipwave-setup.exe"
+          gh release download $tag -R postmanpat-303/ChipWaveTracker --pattern "ChipWave-$($tag.TrimStart('v'))-setup-x64.exe" -O $setup
+          $p = Start-Process $setup -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "ChipWave setup exit $($p.ExitCode)" }
+          $keys = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ChipWaveTracker', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ChipWaveTracker'
+          $k = $keys | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $k) { throw "ChipWave's setup wrote no ChipWaveTracker uninstall entry" }
+          Get-ItemProperty $k | Format-List DisplayName, DisplayVersion, Publisher, DisplayIcon, UninstallString
+          Start-Process $hub -ArgumentList '--list-apps' -Wait -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\cw-list.txt"
+          Get-Content "$env:RUNNER_TEMP\cw-list.txt"
+          if (-not (Select-String "$env:RUNNER_TEMP\cw-list.txt" -Pattern 'chipwave-tracker: 0' -Quiet)) { throw "Wave Hub didn't find ChipWave installed by its setup" }
+          $p = Start-Process $hub -ArgumentList '--uninstall', 'chipwave-tracker' -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\cw-remove.txt"
+          Get-Content "$env:RUNNER_TEMP\cw-remove.txt"
+          if ($p.ExitCode -ne 0) { throw "uninstall exit $($p.ExitCode)" }
+          Start-Sleep 3
+          if (Test-Path $k) { throw "ChipWave's uninstall entry is still there" }
+          "ChipWave setup install found and removed"
+
       - name: Upgrade from the published 0.2.3 setup (apps and uninstall entry kept)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -215,6 +280,13 @@ jobs:
           name: WaveHub-${{ steps.ver.outputs.ver }}-windows-x64
           path: dist/v*/*
           if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: explorer-screenshots
+          path: ${{ runner.temp }}/explorer-*.png
+          if-no-files-found: warn
 
       - name: Attach to the release and update SHA256SUMS.txt
         if: inputs.release_tag != ''

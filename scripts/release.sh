@@ -39,6 +39,7 @@ if [ "${1:-}" = "--sums-only" ]; then
   (cd "$OUT" && sha256sum WaveHub* | sort -k2 > SHA256SUMS.txt && cat SHA256SUMS.txt)
   exit 0
 fi
+python3 scripts/check-ico.py assets/icons/wavehub.ico || { echo "assets/icons/wavehub.ico needs BMP small frames (see scripts/check-ico.py)"; exit 1; }
 rm -rf "$OUT" && mkdir -p "$OUT"
 cargo test --locked --release
 for arch in x86_64 aarch64; do
