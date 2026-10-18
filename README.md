@@ -8,7 +8,7 @@ One place to install, update and open the Wave apps:
 
 Wave Hub is free, for Windows and Linux. No account, no ads, no tracking.
 
-![Wave Hub](screenshots/01-apps-linux.png)
+![Wave Hub](screenshots/light-main.png)
 
 ## What it does
 
@@ -24,6 +24,8 @@ Wave Hub is free, for Windows and Linux. No account, no ads, no tracking.
   - Linux: `~/.local/share/WaveHub/apps` (the AppImage of each app).
 - ChipWave Tracker has no Linux download yet, so on Linux its card says
   "Windows only for now" and links to the build-from-source instructions.
+- Bright, friendly **light theme** by default, with a **dark theme** in **About → Settings →
+  Appearance** (remembered in `settings.json`).
 - **Community** page with links to each app's Discussions, and an **About** page with
   "Check for updates" for Wave Hub itself.
 
@@ -59,6 +61,9 @@ the mingw-w64 cross compiler (`sudo apt install mingw-w64`). The Windows program
 elephant icon built in.
 
 ## Credits
+
+The Poppins font (`assets/fonts/`) is by the Poppins Project Authors, under the SIL Open Font
+License 1.1 (see `assets/fonts/OFL-Poppins.txt`).
 
 The idea and layout are inspired by [ArtCraft Launcher](https://github.com/storytold/craft-launcher)
 (MIT / Apache-2.0). Wave Hub's code is written from scratch and uses none of ArtCraft's code,

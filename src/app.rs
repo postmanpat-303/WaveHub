@@ -15,18 +15,92 @@ use crate::store::{Installed, Kind, Paths, Settings};
 const BUY_ME_A_COFFEE: &str = "https://buymeacoffee.com/postmanpat";
 const PAYPAL: &str = "https://paypal.me/derekh100";
 
-// The wave palette: deep night-sea blues, engraved-ink white, and each app's own colour.
-const BG: Color32 = Color32::from_rgb(11, 14, 26);
-const PANEL: Color32 = Color32::from_rgb(16, 20, 36);
-const CARD: Color32 = Color32::from_rgb(21, 27, 48);
-const LINE: Color32 = Color32::from_rgb(38, 47, 78);
-const TEXT: Color32 = Color32::from_rgb(236, 239, 248);
-const MUTED: Color32 = Color32::from_rgb(140, 150, 182);
+/// Every colour the window uses, for one theme.
+pub struct Palette {
+    pub dark: bool,
+    pub bg: Color32,
+    pub panel: Color32,
+    pub card: Color32,
+    pub line: Color32,
+    pub text: Color32,
+    pub muted: Color32,
+    pub good: Color32,
+    pub warn: Color32,
+    pub info: Color32,
+    pub bad: Color32,
+    pub soft: Color32,
+    pub shadow: Color32,
+}
+
+// Dark: deep night-sea blues and engraved-ink white.
+const DARK_PALETTE: Palette = Palette {
+    dark: true,
+    bg: Color32::from_rgb(11, 14, 26),
+    panel: Color32::from_rgb(16, 20, 36),
+    card: Color32::from_rgb(21, 27, 48),
+    line: Color32::from_rgb(38, 47, 78),
+    text: Color32::from_rgb(236, 239, 248),
+    muted: Color32::from_rgb(140, 150, 182),
+    good: Color32::from_rgb(70, 214, 140),
+    warn: Color32::from_rgb(255, 190, 70),
+    info: Color32::from_rgb(110, 170, 255),
+    bad: Color32::from_rgb(255, 105, 105),
+    soft: Color32::from_rgb(46, 56, 92),
+    shadow: Color32::from_black_alpha(0),
+};
+
+// Light: warm paper white, soft cards, friendly dark ink.
+const LIGHT_PALETTE: Palette = Palette {
+    dark: false,
+    bg: Color32::from_rgb(250, 247, 242),
+    panel: Color32::from_rgb(255, 255, 255),
+    card: Color32::from_rgb(255, 255, 255),
+    line: Color32::from_rgb(236, 230, 220),
+    text: Color32::from_rgb(34, 36, 52),
+    muted: Color32::from_rgb(110, 112, 132),
+    good: Color32::from_rgb(22, 150, 84),
+    warn: Color32::from_rgb(201, 112, 0),
+    info: Color32::from_rgb(37, 99, 235),
+    bad: Color32::from_rgb(214, 52, 52),
+    soft: Color32::from_rgb(241, 236, 228),
+    shadow: Color32::from_rgba_premultiplied(16, 11, 6, 26),
+};
+
+static DARK_MODE: AtomicBool = AtomicBool::new(false);
+
+fn p() -> &'static Palette {
+    if DARK_MODE.load(Ordering::Relaxed) { &DARK_PALETTE } else { &LIGHT_PALETTE }
+}
+
+/// A rounded card with a soft shadow in light mode, a fine outline in dark mode.
+fn card_frame(radius: u8, margin: i8) -> egui::Frame {
+    let pal = p();
+    let f = egui::Frame::new().fill(pal.card).corner_radius(radius).inner_margin(Margin::same(margin));
+    if pal.dark {
+        f.stroke(Stroke::new(1.0, pal.line))
+    } else {
+        f.stroke(Stroke::new(1.0, pal.line)).shadow(egui::Shadow { offset: [0, 6], blur: 22, spread: 0, color: pal.shadow })
+    }
+}
+
+/// A pale wash of `c` for chips and highlights.
+fn tint(c: Color32, amount: f32) -> Color32 {
+    let base = p().card;
+    let mix = |a: u8, b: u8| (a as f32 * amount + b as f32 * (1.0 - amount)) as u8;
+    Color32::from_rgb(mix(c.r(), base.r()), mix(c.g(), base.g()), mix(c.b(), base.b()))
+}
+
 const HUB_PINK: Color32 = Color32::from_rgb(251, 37, 134);
-const GOOD: Color32 = Color32::from_rgb(70, 214, 140);
-const WARN: Color32 = Color32::from_rgb(255, 190, 70);
-const INFO: Color32 = Color32::from_rgb(110, 170, 255);
-const BAD: Color32 = Color32::from_rgb(255, 105, 105);
+const INK: Color32 = Color32::from_rgb(22, 24, 36);
+const WAVE_GREEN: Color32 = Color32::from_rgb(52, 196, 22);
+const WAVE_BLUE: Color32 = Color32::from_rgb(20, 92, 255);
+const WAVE_ORANGE: Color32 = Color32::from_rgb(255, 112, 10);
+
+/// Readable text colour on top of `fill`.
+fn on(fill: Color32) -> Color32 {
+    let lum = 0.299 * fill.r() as f32 + 0.587 * fill.g() as f32 + 0.114 * fill.b() as f32;
+    if lum > 150.0 { INK } else { Color32::WHITE }
+}
 
 fn icon_bytes(name: &str) -> Option<&'static [u8]> {
     Some(match name {
@@ -75,6 +149,8 @@ pub struct WaveHub {
     settings: Settings,
     shared: Arc<Mutex<Shared>>,
     tab: Tab,
+    /// Height of the tallest card in each row last frame, so a row's cards line up.
+    row_heights: Vec<f32>,
 }
 
 fn lock(s: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
@@ -84,10 +160,15 @@ fn lock(s: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
 impl WaveHub {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        apply_theme(&cc.egui_ctx);
         let paths = Paths::new();
         let manifest = manifest::load(&paths.data);
-        let settings = Settings::load(&paths);
+        let mut settings = Settings::load(&paths);
+        if let Ok(theme) = std::env::var("WAVEHUB_THEME") {
+            settings.theme = theme;
+        }
+        DARK_MODE.store(settings.theme == "dark", Ordering::Relaxed);
+        install_fonts(&cc.egui_ctx);
+        apply_theme(&cc.egui_ctx);
         let mut installed = Installed::load(&paths);
         // Forget installs whose program has gone (deleted by hand, or uninstalled in Windows).
         installed.apps.retain(|_, r| r.path.exists());
@@ -97,7 +178,7 @@ impl WaveHub {
             Ok("about") => Tab::About,
             _ => Tab::Apps,
         };
-        let hub = Self { manifest, paths, settings, shared, tab };
+        let hub = Self { manifest, paths, settings, shared, tab, row_heights: Vec::new() };
         hub.check_now(&cc.egui_ctx);
         hub
     }
@@ -191,6 +272,7 @@ impl WaveHub {
 
     fn header(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        header_decor(ui);
         ui.horizontal(|ui| {
             if let Some(bytes) = icon_bytes("wavehub") {
                 ui.add(egui::Image::from_bytes("bytes://wavehub.png", bytes).fit_to_exact_size(vec2(44.0, 44.0)));
@@ -198,15 +280,16 @@ impl WaveHub {
             ui.add_space(4.0);
             ui.vertical(|ui| {
                 ui.add_space(2.0);
-                ui.label(RichText::new("Wave Hub").font(FontId::proportional(24.0)).strong().color(TEXT));
-                ui.label(RichText::new("Install, update and open the Wave apps").color(MUTED));
+                ui.label(title_job("Wave Hub", 26.0));
+                ui.label(RichText::new("Install, update and open the Wave apps").color(p().muted));
             });
             wave_arcs(ui, HUB_PINK);
             ui.add_space(16.0);
             for (tab, label) in [(Tab::Apps, "Apps"), (Tab::Community, "Community"), (Tab::About, "About")] {
                 let selected = self.tab == tab;
-                let text = RichText::new(label).size(15.0).color(if selected { BG } else { TEXT });
-                let button = egui::Button::new(text).fill(if selected { TEXT } else { Color32::TRANSPARENT }).corner_radius(16.0).min_size(vec2(0.0, 30.0));
+                let pill = if p().dark { p().text } else { HUB_PINK };
+                let text = RichText::new(label).size(15.0).color(if selected { on(pill) } else { p().text });
+                let button = egui::Button::new(text).fill(if selected { pill } else { Color32::TRANSPARENT }).stroke(Stroke::NONE).corner_radius(18.0).min_size(vec2(0.0, 32.0));
                 if ui.add(button).clicked() {
                     self.tab = tab;
                 }
@@ -214,15 +297,16 @@ impl WaveHub {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let updates = self.updatable();
                 let label = if updates.is_empty() { "Update all".to_string() } else { format!("Update all ({})", updates.len()) };
-                let button = egui::Button::new(RichText::new(label).strong().color(if updates.is_empty() { MUTED } else { BG }))
-                    .fill(if updates.is_empty() { CARD } else { HUB_PINK })
-                    .corner_radius(8.0)
-                    .min_size(vec2(0.0, 32.0));
+                let button = egui::Button::new(RichText::new(label).family(bold()).color(if updates.is_empty() { p().muted } else { Color32::WHITE }))
+                    .fill(if updates.is_empty() { p().soft } else { HUB_PINK })
+                    .stroke(Stroke::NONE)
+                    .corner_radius(18.0)
+                    .min_size(vec2(0.0, 34.0));
                 if ui.add_enabled(!updates.is_empty(), button).on_hover_text("Update every app that has a newer version").clicked() {
                     self.start_installs(&ctx, updates);
                 }
                 let checking = lock(&self.shared).checking;
-                let refresh = egui::Button::new(RichText::new(if checking { "Checking…" } else { "Check now" }).color(TEXT)).fill(CARD).corner_radius(8.0).min_size(vec2(0.0, 32.0));
+                let refresh = egui::Button::new(RichText::new(if checking { "Checking…" } else { "Check now" }).color(p().text)).fill(p().soft).stroke(Stroke::NONE).corner_radius(18.0).min_size(vec2(0.0, 34.0));
                 if ui.add_enabled(!checking, refresh).clicked() {
                     self.check_now(&ctx);
                 }
@@ -248,25 +332,59 @@ impl WaveHub {
 
     fn apps_page(&mut self, ui: &mut Ui) {
         let width = ui.available_width();
-        let gap = 16.0;
+        let gap = if p().dark { 16.0 } else { 22.0 };
         let columns = ((width + gap) / (320.0 + gap)).floor().clamp(1.0, 3.0) as usize;
         let card_w = (width - gap * (columns as f32 - 1.0)) / columns as f32;
         let apps = self.manifest.apps.clone();
-        for row in apps.chunks(columns) {
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                for spec in row {
-                    ui.allocate_ui_with_layout(vec2(card_w, 0.0), Layout::top_down(Align::Min), |ui| {
-                        ui.set_width(card_w);
-                        self.card(ui, spec);
-                    });
-                }
-            });
+        let mut heights = Vec::new();
+        for (row_index, row) in apps.chunks(columns).enumerate() {
+            let row_min = self.row_heights.get(row_index).copied().unwrap_or(0.0);
+            // Lay each card out in its own fixed-width column, then move down by the tallest.
+            let top_left = ui.cursor().min;
+            let mut tallest: f32 = 0.0;
+            for (i, spec) in row.iter().enumerate() {
+                let min = top_left + vec2(i as f32 * (card_w + gap), 0.0);
+                let rect = egui::Rect::from_min_size(min, vec2(card_w, 2000.0));
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)));
+                self.card(&mut child, spec, card_w, row_min);
+                tallest = tallest.max(child.min_rect().height());
+            }
+            heights.push(tallest);
+            ui.allocate_space(vec2(width, tallest));
             ui.add_space(gap);
         }
+        if heights != self.row_heights {
+            self.row_heights = heights;
+            ui.ctx().request_repaint();
+        }
+        ui.add_space(4.0);
+        self.welcome_strip(ui);
     }
 
-    fn card(&mut self, ui: &mut Ui, spec: &AppSpec) {
+    /// A friendly nudge under the cards towards the community page.
+    fn welcome_strip(&mut self, ui: &mut Ui) {
+        let fill = if p().dark { p().card } else { tint(HUB_PINK, 0.08) };
+        egui::Frame::new().fill(fill).corner_radius(18).inner_margin(Margin::symmetric(20, 14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                if let Some(bytes) = icon_bytes("wavehub") {
+                    ui.add(egui::Image::from_bytes("bytes://wavehub.png", bytes).fit_to_exact_size(vec2(36.0, 36.0)));
+                }
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("Free audio apps, built with the community").family(bold()).size(15.0).color(p().text));
+                    ui.label(RichText::new("Every Wave app is free. Say hi, ask questions and share ideas in Discussions.").color(p().muted));
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let b = egui::Button::new(RichText::new("Join the community").family(bold()).color(Color32::WHITE)).fill(HUB_PINK).stroke(Stroke::NONE).corner_radius(18.0).min_size(vec2(0.0, 36.0));
+                    if ui.add(b).clicked() {
+                        self.tab = Tab::Community;
+                    }
+                });
+            });
+        });
+    }
+
+    fn card(&mut self, ui: &mut Ui, spec: &AppSpec, width: f32, row_min: f32) {
         let ctx = ui.ctx().clone();
         let accent = Color32::from_rgb(spec.accent[0], spec.accent[1], spec.accent[2]);
         let plan = install::plan(spec, self.settings.prefer_installer);
@@ -279,16 +397,22 @@ impl WaveHub {
                 s.errors.get(&spec.id).cloned(),
             )
         };
-        let response = egui::Frame::new().fill(CARD).stroke(Stroke::new(1.0, LINE)).corner_radius(14.0).inner_margin(Margin::same(16)).show(ui, |ui| {
-            ui.set_min_height(268.0);
-            ui.set_width(ui.available_width());
+        let light = !p().dark;
+        let radius: u8 = if light { 20 } else { 14 };
+        let margin: i8 = if light { 20 } else { 16 };
+        let response = card_frame(radius, margin).show(ui, |ui| {
+            ui.set_width(width - 2.0 * margin as f32 - 2.0);
+            ui.set_min_height((row_min - 2.0 * margin as f32 - 2.0).max(if light { 284.0 } else { 268.0 }));
+            if light {
+                ui.add_space(6.0);
+            }
             ui.horizontal(|ui| {
                 if let Some(bytes) = icon_bytes(&spec.icon) {
                     ui.add(egui::Image::from_bytes(format!("bytes://{}.png", spec.icon), bytes).fit_to_exact_size(vec2(64.0, 64.0)));
                 }
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(&spec.name).font(FontId::proportional(20.0)).strong().color(TEXT));
-                    ui.add(egui::Label::new(RichText::new(&spec.description).color(MUTED)).wrap());
+                    ui.label(RichText::new(&spec.name).font(FontId::proportional(20.0)).family(bold()).color(p().text));
+                    ui.add(egui::Label::new(RichText::new(&spec.description).color(p().muted)).wrap());
                 });
             });
             ui.add_space(10.0);
@@ -310,20 +434,20 @@ impl WaveHub {
                         Phase::Installing => "INSTALLING…",
                         Phase::RunningInstaller => "INSTALLER OPEN…",
                     },
-                    INFO,
+                    p().info,
                 )
             } else if let Plan::Unavailable(_) = &plan {
-                if installed_v.is_some() { ("INSTALLED", GOOD) } else { (if cfg!(windows) { "NOT AVAILABLE YET" } else { "WINDOWS ONLY FOR NOW" }, MUTED) }
+                if installed_v.is_some() { ("INSTALLED", p().good) } else { (if cfg!(windows) { "NOT AVAILABLE YET" } else { "WINDOWS ONLY FOR NOW" }, p().muted) }
             } else if update {
-                ("UPDATE AVAILABLE", WARN)
+                ("UPDATE AVAILABLE", p().warn)
             } else if installed_v.is_some() {
-                ("INSTALLED · UP TO DATE", GOOD)
+                ("INSTALLED · UP TO DATE", p().good)
             } else {
                 match &latest {
-                    Latest::Checking => ("CHECKING…", MUTED),
-                    Latest::Found(_) => ("READY TO INSTALL", INFO),
-                    Latest::NoReleases => ("NO RELEASES YET", MUTED),
-                    Latest::Error(_) => ("OFFLINE", BAD),
+                    Latest::Checking => ("CHECKING…", p().muted),
+                    Latest::Found(_) => ("READY TO INSTALL", p().info),
+                    Latest::NoReleases => ("NO RELEASES YET", p().muted),
+                    Latest::Error(_) => ("OFFLINE", p().bad),
                 }
             };
             status_chip(ui, chip, chip_color);
@@ -335,12 +459,12 @@ impl WaveHub {
                 Latest::Error(_) => "couldn't check".into(),
             };
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Installed").color(MUTED));
-                ui.label(RichText::new(installed_v.clone().unwrap_or_else(|| "—".into())).color(TEXT).strong());
-                ui.label(RichText::new("   Latest").color(MUTED));
-                ui.label(RichText::new(latest_text).color(TEXT).strong());
+                ui.label(RichText::new("Installed").color(p().muted));
+                ui.label(RichText::new(installed_v.clone().unwrap_or_else(|| "—".into())).color(p().text).family(bold()));
+                ui.label(RichText::new("   Latest").color(p().muted));
+                ui.label(RichText::new(latest_text).color(p().text).family(bold()));
                 if let Some(r) = &record {
-                    ui.label(RichText::new(format!("({})", r.kind.label())).color(MUTED).small());
+                    ui.label(RichText::new(format!("({})", r.kind.label())).color(p().muted).small());
                 }
             });
             ui.add_space(10.0);
@@ -358,22 +482,22 @@ impl WaveHub {
                     Phase::Installing => (1.0, "Installing…".into()),
                     Phase::RunningInstaller => (1.0, "Finish the setup in the installer window".into()),
                 };
-                ui.label(RichText::new(text).color(TEXT));
+                ui.label(RichText::new(text).color(p().text));
                 ui.horizontal(|ui| {
                     let bar_w = ui.available_width() - 80.0;
-                    ui.add(egui::ProgressBar::new(frac).fill(accent).desired_width(bar_w).desired_height(10.0).corner_radius(5.0));
+                    ui.add(egui::ProgressBar::new(frac).fill(accent).desired_width(bar_w).desired_height(12.0).corner_radius(6.0));
                     let can_cancel = matches!(phase, Phase::Downloading { .. } | Phase::Checking);
-                    if ui.add_enabled(can_cancel, egui::Button::new("Cancel").corner_radius(6.0)).clicked() {
+                    if ui.add_enabled(can_cancel, egui::Button::new("Cancel").corner_radius(14.0)).clicked() {
                         cancel.store(true, Ordering::Relaxed);
                     }
                 });
             } else if let Plan::Unavailable(why) = &plan {
-                ui.add(egui::Label::new(RichText::new(why).color(MUTED)).wrap());
+                ui.add(egui::Label::new(RichText::new(why).color(p().muted)).wrap());
                 if let Some(r) = &record {
                     if main_button(ui, "OPEN", accent, full, true).clicked() {
                         self.open(spec, &r.path);
                     }
-                } else if main_button(ui, "BUILD FROM SOURCE", Color32::from_rgb(46, 56, 92), full, true).clicked() {
+                } else if main_button(ui, "BUILD FROM SOURCE", p().soft, full, true).clicked() {
                     ctx.open_url(egui::OpenUrl::new_tab(format!("https://github.com/{}#readme", spec.repo)));
                 }
             } else if update {
@@ -393,10 +517,10 @@ impl WaveHub {
             }
             if let Some(e) = &error {
                 ui.add_space(6.0);
-                ui.add(egui::Label::new(RichText::new(e).color(BAD)).wrap());
+                ui.add(egui::Label::new(RichText::new(e).color(p().bad)).wrap());
             }
             if let Latest::Error(e) = &latest {
-                ui.add(egui::Label::new(RichText::new(e).color(MUTED).small()).wrap());
+                ui.add(egui::Label::new(RichText::new(e).color(p().muted).small()).wrap());
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -405,7 +529,7 @@ impl WaveHub {
                 link(ui, "Discussions", &format!("https://github.com/{}/discussions", spec.repo));
                 if let Some(r) = record.clone() {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.menu_button(RichText::new("•••").color(MUTED), |ui| {
+                        ui.menu_button(RichText::new("•••").color(p().muted), |ui| {
                             if update && ui.button(format!("Open {} (current version)", r.version)).clicked() {
                                 self.open(spec, &r.path);
                             }
@@ -424,8 +548,14 @@ impl WaveHub {
         });
         // Accent strip along the top edge, like the coloured app tiles.
         let rect = response.response.rect;
-        let strip = egui::Rect::from_min_size(rect.min + vec2(16.0, 0.0), vec2(56.0, 3.0));
-        ui.painter().rect_filled(strip, CornerRadius::same(2), accent);
+        if light {
+            let strip = egui::Rect::from_min_size(rect.min, vec2(rect.width(), 8.0));
+            let corners = CornerRadius { nw: radius, ne: radius, sw: 0, se: 0 };
+            ui.painter().rect_filled(strip, corners, accent);
+        } else {
+            let strip = egui::Rect::from_min_size(rect.min + vec2(16.0, 0.0), vec2(56.0, 3.0));
+            ui.painter().rect_filled(strip, CornerRadius::same(2), accent);
+        }
     }
 
     fn open(&self, spec: &AppSpec, path: &std::path::Path) {
@@ -457,21 +587,21 @@ impl WaveHub {
     }
 
     fn community_page(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("Join the community").font(FontId::proportional(22.0)).strong().color(TEXT));
+        ui.label(RichText::new("Join the community").font(FontId::proportional(22.0)).family(bold()).color(p().text));
         ui.add_space(4.0);
-        ui.add(egui::Label::new(RichText::new("Every Wave app is free. Ask questions, share ideas and show what you've made in each app's Discussions on GitHub.").color(MUTED)).wrap());
+        ui.add(egui::Label::new(RichText::new("Every Wave app is free. Ask questions, share ideas and show what you've made in each app's Discussions on GitHub.").color(p().muted)).wrap());
         ui.add_space(12.0);
         for spec in self.manifest.apps.clone() {
             let accent = Color32::from_rgb(spec.accent[0], spec.accent[1], spec.accent[2]);
-            egui::Frame::new().fill(CARD).stroke(Stroke::new(1.0, LINE)).corner_radius(12.0).inner_margin(Margin::same(12)).show(ui, |ui| {
+            card_frame(16, 14).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     if let Some(bytes) = icon_bytes(&spec.icon) {
                         ui.add(egui::Image::from_bytes(format!("bytes://{}.png", spec.icon), bytes).fit_to_exact_size(vec2(40.0, 40.0)));
                     }
-                    ui.label(RichText::new(&spec.name).size(17.0).strong().color(TEXT));
+                    ui.label(RichText::new(&spec.name).size(17.0).family(bold()).color(p().text));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let b = egui::Button::new(RichText::new("Discussions").strong().color(BG)).fill(accent).corner_radius(8.0).min_size(vec2(0.0, 30.0));
+                        let b = egui::Button::new(RichText::new("Discussions").family(bold()).color(on(accent))).fill(accent).stroke(Stroke::NONE).corner_radius(16.0).min_size(vec2(0.0, 32.0));
                         if ui.add(b).clicked() {
                             ui.ctx().open_url(egui::OpenUrl::new_tab(format!("https://github.com/{}/discussions", spec.repo)));
                         }
@@ -480,7 +610,7 @@ impl WaveHub {
                     });
                 });
             });
-            ui.add_space(8.0);
+            ui.add_space(if p().dark { 8.0 } else { 14.0 });
         }
         ui.add_space(8.0);
         support_box(ui, false);
@@ -493,10 +623,10 @@ impl WaveHub {
                 ui.add(egui::Image::from_bytes("bytes://wavehub.png", bytes).fit_to_exact_size(vec2(96.0, 96.0)));
             }
             ui.vertical(|ui| {
-                ui.label(RichText::new("Wave Hub").font(FontId::proportional(26.0)).strong().color(TEXT));
-                ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(MUTED));
+                ui.label(RichText::new("Wave Hub").font(FontId::proportional(26.0)).family(bold()).color(p().text));
+                ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(p().muted));
                 ui.add_space(4.0);
-                ui.add(egui::Label::new(RichText::new("Wave Hub is free and always will be. No account, no ads, no tracking. It installs and updates BigWave Radio, ChipWave Tracker and StreamWave on Windows and Linux, straight from their official GitHub releases.").color(TEXT)).wrap());
+                ui.add(egui::Label::new(RichText::new("Wave Hub is free and always will be. No account, no ads, no tracking. It installs and updates BigWave Radio, ChipWave Tracker and StreamWave on Windows and Linux, straight from their official GitHub releases.").color(p().text)).wrap());
             });
         });
         ui.add_space(14.0);
@@ -504,11 +634,11 @@ impl WaveHub {
             let hub = lock(&self.shared).hub_latest.clone();
             let current = env!("CARGO_PKG_VERSION");
             let (text, color) = match &hub {
-                None | Some(Latest::Checking) => ("Checking for a newer Wave Hub…".to_string(), MUTED),
-                Some(Latest::Found(tag)) if github::is_newer(tag, current) => (format!("Wave Hub {} is available.", tag.trim_start_matches('v')), WARN),
-                Some(Latest::Found(_)) => ("You have the newest Wave Hub.".to_string(), GOOD),
-                Some(Latest::NoReleases) => ("No Wave Hub releases have been published yet, so this is the newest.".to_string(), MUTED),
-                Some(Latest::Error(e)) => (format!("Couldn't check: {e}"), BAD),
+                None | Some(Latest::Checking) => ("Checking for a newer Wave Hub…".to_string(), p().muted),
+                Some(Latest::Found(tag)) if github::is_newer(tag, current) => (format!("Wave Hub {} is available.", tag.trim_start_matches('v')), p().warn),
+                Some(Latest::Found(_)) => ("You have the newest Wave Hub.".to_string(), p().good),
+                Some(Latest::NoReleases) => ("No Wave Hub releases have been published yet, so this is the newest.".to_string(), p().muted),
+                Some(Latest::Error(e)) => (format!("Couldn't check: {e}"), p().bad),
             };
             ui.horizontal(|ui| {
                 if ui.add(egui::Button::new("Check for updates").corner_radius(8.0)).clicked() {
@@ -521,19 +651,33 @@ impl WaveHub {
             });
         });
         section(ui, "Settings", |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Appearance").color(p().text));
+                let mut theme = self.settings.theme.clone();
+                let mut changed = false;
+                changed |= ui.selectable_value(&mut theme, "light".to_string(), "  Light  ").changed();
+                changed |= ui.selectable_value(&mut theme, "dark".to_string(), "  Dark  ").changed();
+                if changed && theme != self.settings.theme {
+                    self.settings.theme = theme;
+                    let _ = self.settings.save(&self.paths);
+                    DARK_MODE.store(self.settings.theme == "dark", Ordering::Relaxed);
+                    apply_theme(&ctx);
+                }
+            });
+            ui.add_space(4.0);
             if cfg!(windows) {
                 let mut v = self.settings.prefer_installer;
                 if ui.checkbox(&mut v, "Use each app's official installer instead of the portable version").changed() {
                     self.settings.prefer_installer = v;
                     let _ = self.settings.save(&self.paths);
                 }
-                ui.label(RichText::new("The portable version needs no admin rights and lives in Wave Hub's folder. StreamWave always uses its installer.").color(MUTED).small());
+                ui.label(RichText::new("The portable version needs no admin rights and lives in Wave Hub's folder. StreamWave always uses its installer.").color(p().muted).small());
             } else {
-                ui.label(RichText::new("On Linux, apps are installed as AppImages in your home folder. No password needed.").color(MUTED));
+                ui.label(RichText::new("On Linux, apps are installed as AppImages in your home folder. No password needed.").color(p().muted));
             }
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Apps folder:").color(MUTED));
-                ui.label(RichText::new(self.paths.apps().display().to_string()).monospace().color(TEXT));
+                ui.label(RichText::new("Apps folder:").color(p().muted));
+                ui.label(RichText::new(self.paths.apps().display().to_string()).monospace().color(p().text));
                 if ui.button("Open folder").clicked() {
                     install::reveal(&self.paths.apps());
                 }
@@ -541,7 +685,7 @@ impl WaveHub {
         });
         support_box(ui, true);
         ui.add_space(10.0);
-        ui.label(RichText::new("MIT License · © 2026 Derek Heasley").color(MUTED).small());
+        ui.label(RichText::new("MIT License · © 2026 Derek Heasley").color(p().muted).small());
     }
 
     fn footer(&self, ui: &mut Ui) {
@@ -555,7 +699,7 @@ impl WaveHub {
             None => "Not checked yet".into(),
         };
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{checked} · Installing for {} · Free and open source", install::os_label())).color(MUTED).small());
+            ui.label(RichText::new(format!("{checked} · Installing for {} · Free and open source", install::os_label())).color(p().muted).small());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 link(ui, "Buy Me a Coffee", BUY_ME_A_COFFEE);
             });
@@ -597,9 +741,9 @@ fn run_one(shared: &Arc<Mutex<Shared>>, paths: &Paths, spec: &AppSpec, tag: &str
 
 impl eframe::App for WaveHub {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        egui::Panel::top("header").frame(egui::Frame::new().fill(PANEL).inner_margin(Margin::symmetric(20, 12))).show(ui, |ui| self.header(ui));
-        egui::Panel::bottom("footer").frame(egui::Frame::new().fill(PANEL).inner_margin(Margin::symmetric(20, 8))).show(ui, |ui| self.footer(ui));
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(Margin::same(20))).show(ui, |ui| {
+        egui::Panel::top("header").frame(egui::Frame::new().fill(p().panel).inner_margin(Margin::symmetric(24, if p().dark { 12 } else { 16 }))).show(ui, |ui| self.header(ui));
+        egui::Panel::bottom("footer").frame(egui::Frame::new().fill(p().panel).inner_margin(Margin::symmetric(20, 8))).show(ui, |ui| self.footer(ui));
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(p().bg).inner_margin(Margin::same(if p().dark { 20 } else { 26 }))).show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.tab {
                 Tab::Apps => self.apps_page(ui),
                 Tab::Community => self.community_page(ui),
@@ -611,28 +755,118 @@ impl eframe::App for WaveHub {
     }
 }
 
+fn bold() -> egui::FontFamily {
+    egui::FontFamily::Name("bold".into())
+}
+
+/// Poppins (as on the Wave Family banner), with egui's own fonts behind it for symbols.
+fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("poppins".into(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Poppins-Regular.ttf"))));
+    fonts.font_data.insert("poppins-semibold".into(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Poppins-SemiBold.ttf"))));
+    let fallbacks = fonts.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
+    fonts.families.entry(egui::FontFamily::Proportional).or_default().insert(0, "poppins".into());
+    let mut b = vec!["poppins-semibold".to_string()];
+    b.extend(fallbacks);
+    fonts.families.insert(bold(), b);
+    ctx.set_fonts(fonts);
+}
+
 fn apply_theme(ctx: &egui::Context) {
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = BG;
-    v.window_fill = PANEL;
-    v.extreme_bg_color = Color32::from_rgb(8, 10, 20);
-    v.faint_bg_color = CARD;
-    v.hyperlink_color = INFO;
-    v.selection.bg_fill = HUB_PINK.gamma_multiply(0.6);
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, LINE);
-    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(32, 40, 68);
-    v.widgets.inactive.bg_fill = Color32::from_rgb(32, 40, 68);
-    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(44, 54, 90);
-    v.widgets.active.weak_bg_fill = Color32::from_rgb(54, 66, 108);
+    let pal = p();
+    let mut v = if pal.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    v.panel_fill = pal.bg;
+    v.window_fill = pal.panel;
+    v.faint_bg_color = pal.card;
+    v.hyperlink_color = pal.info;
+    v.selection.bg_fill = if pal.dark { HUB_PINK.gamma_multiply(0.6) } else { tint(HUB_PINK, 0.25) };
+    v.selection.stroke = Stroke::new(1.0, pal.text);
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, pal.text);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, pal.line);
+    v.override_text_color = None;
+    if pal.dark {
+        v.extreme_bg_color = Color32::from_rgb(8, 10, 20);
+        v.widgets.inactive.weak_bg_fill = Color32::from_rgb(32, 40, 68);
+        v.widgets.inactive.bg_fill = Color32::from_rgb(32, 40, 68);
+        v.widgets.hovered.weak_bg_fill = Color32::from_rgb(44, 54, 90);
+        v.widgets.active.weak_bg_fill = Color32::from_rgb(54, 66, 108);
+    } else {
+        v.extreme_bg_color = Color32::from_rgb(240, 235, 227);
+        v.widgets.inactive.weak_bg_fill = pal.soft;
+        v.widgets.inactive.bg_fill = pal.soft;
+        v.widgets.inactive.bg_stroke = Stroke::NONE;
+        v.widgets.inactive.fg_stroke = Stroke::new(1.0, pal.text);
+        v.widgets.hovered.weak_bg_fill = Color32::from_rgb(232, 225, 214);
+        v.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(220, 210, 196));
+        v.widgets.hovered.fg_stroke = Stroke::new(1.0, pal.text);
+        v.widgets.active.weak_bg_fill = Color32::from_rgb(222, 213, 200);
+        v.widgets.active.fg_stroke = Stroke::new(1.0, pal.text);
+        v.popup_shadow = egui::Shadow { offset: [0, 6], blur: 18, spread: 0, color: pal.shadow };
+    }
     ctx.set_visuals(v);
     ctx.global_style_mut(|style| {
-        style.spacing.item_spacing = vec2(8.0, 6.0);
-        style.spacing.button_padding = vec2(12.0, 6.0);
-        style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(14.5));
-        style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(14.5));
-        style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(12.0));
+        let light = !pal.dark;
+        style.spacing.item_spacing = if light { vec2(10.0, 7.0) } else { vec2(8.0, 6.0) };
+        style.spacing.button_padding = vec2(14.0, 6.0);
+        style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(14.0));
+        style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(14.0));
+        style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(11.5));
     });
+}
+
+/// "Wave Hub" in the Wave Family gradient (green → blue → orange → pink), as on the banner.
+fn title_job(text: &str, size: f32) -> egui::text::LayoutJob {
+    let stops = [WAVE_GREEN, Color32::from_rgb(20, 160, 200), WAVE_BLUE, WAVE_ORANGE, HUB_PINK];
+    let n = text.chars().count().max(2) - 1;
+    let mut job = egui::text::LayoutJob::default();
+    for (i, ch) in text.chars().enumerate() {
+        let t = i as f32 / n as f32 * (stops.len() - 1) as f32;
+        let k = (t.floor() as usize).min(stops.len() - 2);
+        let f = t - k as f32;
+        let (a, b) = (stops[k], stops[k + 1]);
+        let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * f) as u8;
+        let color = if p().dark { Color32::from_rgb(mix(a.r(), b.r()).saturating_add(30), mix(a.g(), b.g()).saturating_add(30), mix(a.b(), b.b()).saturating_add(30)) } else { Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b())) };
+        job.append(&ch.to_string(), 0.0, egui::TextFormat { font_id: FontId::new(size, bold()), color, ..Default::default() });
+    }
+    job
+}
+
+/// Behind the header: faint sound-wave rings and three gentle waves along the bottom edge,
+/// in the apps' colours, like the Wave Family banner.
+fn header_decor(ui: &mut Ui) {
+    let rect = ui.max_rect().expand2(vec2(24.0, 16.0));
+    let painter = ui.painter().with_clip_rect(rect);
+    let strength = if p().dark { 0.35 } else { 1.0 };
+    // Rings radiating from the middle of the header.
+    let center = egui::pos2(rect.center().x + 40.0, rect.center().y);
+    let ring_colors = [WAVE_GREEN, WAVE_BLUE, WAVE_ORANGE, HUB_PINK];
+    for i in 0..8 {
+        let r = 40.0 + i as f32 * 26.0;
+        let c = ring_colors[i % 4];
+        let alpha = ((46.0 - i as f32 * 4.5) * strength) as u8;
+        for side in [-1.0f32, 1.0] {
+            let pts: Vec<egui::Pos2> = (0..=24)
+                .map(|k| {
+                    let a = -0.55 + 1.1 * k as f32 / 24.0;
+                    center + vec2(side * r * a.cos(), r * a.sin())
+                })
+                .collect();
+            painter.add(egui::Shape::line(pts, Stroke::new(2.0, Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha))));
+        }
+    }
+    // Waves along the bottom.
+    for (j, c) in [WAVE_GREEN, WAVE_BLUE, WAVE_ORANGE].iter().enumerate() {
+        let phase = j as f32 * 2.1;
+        let pts: Vec<egui::Pos2> = (0..=120)
+            .map(|k| {
+                let x = rect.left() + rect.width() * k as f32 / 120.0;
+                let y = rect.bottom() - 7.0 + 4.0 * ((x / 90.0) + phase).sin() + 2.0 * ((x / 37.0) - phase).sin();
+                egui::pos2(x, y)
+            })
+            .collect();
+        let alpha = (110.0 * strength) as u8;
+        painter.add(egui::Shape::line(pts, Stroke::new(1.6, Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha))));
+    }
 }
 
 fn mb(bytes: u64) -> String {
@@ -643,20 +877,25 @@ fn main_button(ui: &mut Ui, label: &str, fill: Color32, size: egui::Vec2, enable
     // Painted by hand so the label is centred and the colours stay ours.
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(size, sense);
-    let lum = 0.299 * fill.r() as f32 + 0.587 * fill.g() as f32 + 0.114 * fill.b() as f32;
-    let mut text_color = if lum > 140.0 { BG } else { Color32::WHITE };
+    let mut text_color = if fill == p().soft { p().text } else { on(fill) };
     let mut bg = fill;
     if !enabled {
-        bg = Color32::from_rgb(40, 46, 70);
-        text_color = MUTED;
+        bg = p().soft;
+        text_color = p().muted;
     } else if response.is_pointer_button_down_on() {
         bg = fill.linear_multiply(0.8);
     } else if response.hovered() {
         bg = Color32::from_rgb(fill.r().saturating_add(18), fill.g().saturating_add(18), fill.b().saturating_add(18));
     }
     if ui.is_rect_visible(rect) {
-        ui.painter().rect_filled(rect, CornerRadius::same(10), bg);
-        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, FontId::proportional(15.0), text_color);
+        let radius = if p().dark { 10 } else { (size.y / 2.0) as u8 };
+        if !p().dark && enabled {
+            // A soft coloured glow under cheerful buttons.
+            let glow = egui::Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), 70) };
+            ui.painter().add(glow.as_shape(rect, CornerRadius::same(radius)));
+        }
+        ui.painter().rect_filled(rect, CornerRadius::same(radius), bg);
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, FontId::new(15.0, bold()), text_color);
     }
     if enabled {
         response.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -666,39 +905,44 @@ fn main_button(ui: &mut Ui, label: &str, fill: Color32, size: egui::Vec2, enable
 }
 
 fn status_chip(ui: &mut Ui, text: &str, color: Color32) {
-    egui::Frame::new().stroke(Stroke::new(1.0, color)).corner_radius(4.0).inner_margin(Margin::symmetric(6, 2)).show(ui, |ui| {
-        ui.label(RichText::new(text).size(11.0).strong().color(color));
+    let frame = if p().dark {
+        egui::Frame::new().stroke(Stroke::new(1.0, color)).corner_radius(4.0).inner_margin(Margin::symmetric(6, 2))
+    } else {
+        egui::Frame::new().fill(tint(color, 0.13)).corner_radius(10.0).inner_margin(Margin::symmetric(9, 3))
+    };
+    frame.show(ui, |ui| {
+        ui.label(RichText::new(text).size(11.0).family(bold()).color(color));
     });
 }
 
 fn link(ui: &mut Ui, text: &str, url: &str) {
-    let r = ui.add(egui::Label::new(RichText::new(text).color(MUTED).size(12.5).underline()).sense(Sense::click())).on_hover_text(url).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let r = ui.add(egui::Label::new(RichText::new(text).color(p().muted).size(12.5).underline()).sense(Sense::click())).on_hover_text(url).on_hover_cursor(egui::CursorIcon::PointingHand);
     if r.clicked() {
         ui.ctx().open_url(egui::OpenUrl::new_tab(url));
     }
 }
 
 fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
-    egui::Frame::new().fill(CARD).stroke(Stroke::new(1.0, LINE)).corner_radius(12.0).inner_margin(Margin::same(14)).show(ui, |ui| {
+    card_frame(16, if p().dark { 14 } else { 18 }).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new(title).size(16.0).strong().color(TEXT));
+        ui.label(RichText::new(title).size(16.0).family(bold()).color(p().text));
         ui.add_space(6.0);
         body(ui);
     });
-    ui.add_space(10.0);
+    ui.add_space(if p().dark { 10.0 } else { 16.0 });
 }
 
 fn support_box(ui: &mut Ui, with_paypal: bool) {
     section(ui, "Support Del's work", |ui| {
-        ui.add(egui::Label::new(RichText::new("All Wave apps are free. If they make your day better, a coffee keeps the updates coming. Totally optional.").color(MUTED)).wrap());
+        ui.add(egui::Label::new(RichText::new("All Wave apps are free. If they make your day better, a coffee keeps the updates coming. Totally optional.").color(p().muted)).wrap());
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let coffee = egui::Button::new(RichText::new("Buy Me a Coffee").strong().color(BG)).fill(Color32::from_rgb(255, 221, 0)).corner_radius(8.0).min_size(vec2(0.0, 32.0));
+            let coffee = egui::Button::new(RichText::new("Buy Me a Coffee").family(bold()).color(INK)).fill(Color32::from_rgb(255, 221, 0)).stroke(Stroke::NONE).corner_radius(16.0).min_size(vec2(0.0, 32.0));
             if ui.add(coffee).clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(BUY_ME_A_COFFEE));
             }
             if with_paypal {
-                let paypal = egui::Button::new(RichText::new("PayPal").strong().color(Color32::WHITE)).fill(Color32::from_rgb(0, 112, 186)).corner_radius(8.0).min_size(vec2(0.0, 32.0));
+                let paypal = egui::Button::new(RichText::new("PayPal").family(bold()).color(Color32::WHITE)).fill(Color32::from_rgb(0, 112, 186)).stroke(Stroke::NONE).corner_radius(16.0).min_size(vec2(0.0, 32.0));
                 if ui.add(paypal).clicked() {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(PAYPAL));
                 }

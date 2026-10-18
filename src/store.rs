@@ -69,11 +69,13 @@ pub struct Installed {
 pub struct Settings {
     /// Windows: use the official setup program instead of the portable zip when both exist.
     pub prefer_installer: bool,
+    /// "light" (the default) or "dark".
+    pub theme: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { prefer_installer: false }
+        Self { prefer_installer: false, theme: "light".into() }
     }
 }
 
