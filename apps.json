@@ -8,18 +8,34 @@
       "description": "Free internet radio with mood chips, plugins and a visualiser.",
       "repo": "postmanpat-303/BigWaveRadio",
       "icon": "bigwave_radio",
-      "accent": [62, 224, 26],
+      "accent": [
+        62,
+        224,
+        26
+      ],
       "sums": "SHA256SUMS.txt",
       "windows": {
         "portable": "BigWaveRadio-{version}-windows-x64.zip",
         "exe": "BigWaveRadio.exe",
         "installer": "BigWaveRadio-{version}-setup-x64.exe",
-        "installed_exe": ["{programfiles}\\BigWave Radio\\BigWaveRadio.exe"],
-        "silent_args": ["/S"],
+        "installed_exe": [
+          "{programfiles}\\BigWave Radio\\BigWaveRadio.exe"
+        ],
+        "silent_args": [
+          "/S"
+        ],
         "uninstall_key": "BigWaveRadio"
       },
       "linux": {
-        "appimage": "BigWaveRadio-{version}-linux-x86_64.AppImage"
+        "appimage": "BigWaveRadio-{version}-linux-{arch}.AppImage",
+        "arches": [
+          "x86_64",
+          "aarch64"
+        ]
+      },
+      "macos": {
+        "zip": "BigWaveRadio-{version}-macos-universal.zip",
+        "exe": "BigWave Radio.app/Contents/MacOS/BigWaveRadio"
       }
     },
     {
@@ -28,17 +44,28 @@
       "description": "A modern OctaMED-inspired music tracker.",
       "repo": "postmanpat-303/ChipWaveTracker",
       "icon": "chipwave_tracker",
-      "accent": [20, 92, 255],
+      "accent": [
+        20,
+        92,
+        255
+      ],
       "windows": {
         "portable": "ChipWave-{version}-windows-x64.zip",
         "exe": "ChipWave.exe",
         "installer": "ChipWave-{version}-setup-x64.exe",
-        "installed_exe": ["{programfiles}\\ChipWave Tracker\\ChipWave.exe"],
-        "silent_args": ["/S"],
+        "installed_exe": [
+          "{programfiles}\\ChipWave Tracker\\ChipWave.exe"
+        ],
+        "silent_args": [
+          "/S"
+        ],
         "uninstall_key": "ChipWaveTracker"
       },
       "linux": {
         "unavailable": "Windows only for now. On Linux, build it from source."
+      },
+      "macos": {
+        "unavailable": "Windows only for now."
       }
     },
     {
@@ -47,16 +74,28 @@
       "description": "Record and edit audio for streams and podcasts, with OBS sync.",
       "repo": "postmanpat-303/StreamWave",
       "icon": "streamwave",
-      "accent": [255, 112, 10],
+      "accent": [
+        255,
+        112,
+        10
+      ],
       "sums": "SHA256SUMS.txt",
       "windows": {
         "installer": "StreamWave_{version}_x64-setup.exe",
-        "installed_exe": ["{localappdata}\\StreamWave\\StreamWave.exe", "{programfiles}\\StreamWave\\StreamWave.exe"],
-        "silent_args": ["/S"],
+        "installed_exe": [
+          "{localappdata}\\StreamWave\\StreamWave.exe",
+          "{programfiles}\\StreamWave\\StreamWave.exe"
+        ],
+        "silent_args": [
+          "/S"
+        ],
         "uninstall_key": "StreamWave"
       },
       "linux": {
         "appimage": "StreamWave_{version}_amd64.AppImage"
+      },
+      "macos": {
+        "unavailable": "Windows and Linux only for now."
       }
     }
   ]

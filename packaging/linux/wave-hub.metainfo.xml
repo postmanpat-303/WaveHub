@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>wave-hub</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Wave Hub</name>
+  <summary>Install, update and open the Wave apps</summary>
+  <description>
+    <p>Wave Hub is a free launcher for the Wave apps: BigWave Radio, ChipWave Tracker and
+    StreamWave. One click installs, updates or opens each app, and every download is checked
+    against its published checksum.</p>
+  </description>
+  <launchable type="desktop-id">wave-hub.desktop</launchable>
+  <url type="homepage">https://github.com/postmanpat-303/WaveHub</url>
+  <url type="donation">https://buymeacoffee.com/postmanpat</url>
+  <developer id="io.github.postmanpat-303"><name>Derek Heasley</name></developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.2.0" date="2026-10-18"/>
+    <release version="0.1.0" date="2026-10-18"/>
+  </releases>
+</component>

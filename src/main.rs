@@ -5,9 +5,25 @@ mod app;
 mod github;
 mod install;
 mod manifest;
+mod selfupdate;
 mod store;
 
 fn main() -> eframe::Result<()> {
+    // Small command-line helpers, used by the packaging smoke tests.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("Wave Hub {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--update-info") {
+        // How this copy was installed, and which release files a newer version would come from.
+        let kind = selfupdate::detect();
+        let version = args.iter().skip_while(|a| *a != "--update-info").nth(1).cloned().unwrap_or_else(|| env!("CARGO_PKG_VERSION").into());
+        println!("Wave Hub {} ({}, {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
+        println!("installed as: {}", kind.label());
+        println!("would update from (best first): {}", selfupdate::candidates(kind, &version, std::env::consts::ARCH).join(", "));
+        return Ok(());
+    }
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icons/wavehub_256.png")).ok();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Wave Hub")

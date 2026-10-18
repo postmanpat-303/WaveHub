@@ -43,6 +43,7 @@ version comes out, click **Update**. That's it. No account, no ads, no tracking.
   - Linux: `~/.local/share/WaveHub/apps`, using each app's AppImage.
 - ChipWave Tracker has no Linux download yet, so on Linux its card says "Windows only for now"
   and links to the build-from-source instructions.
+- **Raspberry Pi and other ARM Linux** too, and **macOS** for BigWave Radio.
 - **Light and dark themes** (light by default) in **About → Settings**.
 - A **Community** page with each app's Discussions, and **Check for updates** for Wave Hub itself.
 
@@ -57,28 +58,37 @@ version comes out, click **Update**. That's it. No account, no ads, no tracking.
 
 ## Download and install
 
-Get the newest version from the **[releases page](https://github.com/postmanpat-303/WaveHub/releases)**.
+Get the newest version from the **[releases page](https://github.com/postmanpat-303/WaveHub/releases/latest)**.
+Pick the file for your computer:
 
-**Windows (10 and 11)**
-1. Download `WaveHub.exe`.
-2. Double-click it. Wave Hub is a single program; there's nothing to install.
-   Windows may say it "protected your PC" because the file is new and not code-signed yet.
-   Click **More info → Run anyway**.
+| Your computer | Download | Then |
+| --- | --- | --- |
+| **Windows** (10 and 11, 64-bit) | `WaveHub-<version>-setup-x64.exe` | Run it. It installs just for you (no admin password) and adds Wave Hub to the Start menu. |
+| Windows, no install | `WaveHub-<version>-windows-x64.zip` | Unzip it anywhere and double-click `WaveHub.exe`. |
+| **Ubuntu, Debian, Mint, Pop!_OS** | `WaveHub-<version>-linux-x86_64.deb` | Double-click it, or `sudo apt install ./WaveHub-*.deb` |
+| **Fedora, openSUSE** | `WaveHub-<version>-linux-x86_64.rpm` | `sudo dnf install ./WaveHub-*.rpm` |
+| **Arch, CachyOS, Manjaro, EndeavourOS** | `WaveHub-<version>-linux-x86_64.pkg.tar.zst` | `sudo pacman -U WaveHub-*.pkg.tar.zst` |
+| Any Linux | `WaveHub-<version>-linux-x86_64.AppImage` | `chmod +x WaveHub-*.AppImage`, then run it. |
+| Any Linux, no package | `WaveHub-<version>-linux-x86_64.tar.gz` | Unpack it, then `./install.sh` (adds it to your menu; `./install.sh --uninstall` removes it). |
+| Raspberry Pi and other 64-bit ARM Linux | the same files with `aarch64` instead of `x86_64` | As above. |
+| macOS (Apple Silicon and Intel) | `WaveHub-<version>-macos-universal.dmg`, when the release has one | Open it and drag Wave Hub into Applications. On a Mac, Wave Hub can install BigWave Radio. |
 
-**Linux (x86_64)**
-1. Download `WaveHub-linux-x86_64`.
-2. Make it runnable and start it:
-   ```sh
-   chmod +x WaveHub-linux-x86_64
-   ./WaveHub-linux-x86_64
-   ```
+The Linux files work on any distribution from 2020 on (glibc 2.31 or newer).
 
-To check your download, compare it with `SHA256SUMS.txt` from the same release
-(`sha256sum -c SHA256SUMS.txt --ignore-missing` on Linux, `certutil -hashfile WaveHub.exe SHA256` on Windows).
+Windows may say it "protected your PC" because Wave Hub isn't code-signed yet: click
+**More info → Run anyway**. On a Mac, the first time, right-click Wave Hub and choose **Open**.
+
+To check a download, compare it with `SHA256SUMS.txt` from the same release
+(`sha256sum -c SHA256SUMS.txt --ignore-missing` on Linux, `certutil -hashfile <file> SHA256` on
+Windows, `shasum -a 256 <file>` on a Mac).
+
+**Updating Wave Hub:** About → **Check for updates** tells you when there's a new version and links
+straight to the right file for how you installed it (the setup, the zip, the .deb, the AppImage and
+so on).
 
 > [!NOTE]
-> This is the first release and it's marked **pre-release**. It has been tested on Linux and
-> under Wine. If you try it on Windows, especially installing StreamWave, please say how it went in
+> Wave Hub has been tested on Linux and under Wine. If you try it on Windows, especially installing
+> StreamWave, please say how it went in
 > [Discussions](https://github.com/postmanpat-303/WaveHub/discussions) or
 > [open an issue](https://github.com/postmanpat-303/WaveHub/issues).
 
@@ -97,13 +107,15 @@ GitHub's API, so there's no hourly limit to run into.
 You need Rust ([rustup.rs](https://rustup.rs)).
 
 ```sh
-cargo run --release          # build and run on this computer
-./scripts/build-all.sh       # Linux + Windows programs and SHA256SUMS.txt into dist/v<version>/
+cargo run --release              # build and run on this computer
+scripts/release.sh               # every Windows and Linux file + SHA256SUMS.txt into dist/v<version>/
+scripts/test-packages.sh         # install-and-run checks for those files (Linux, Wine, qemu)
 ```
 
-The Windows build on Linux also needs `rustup target add x86_64-pc-windows-gnu` and
-`sudo apt install mingw-w64`. Release files must keep the names `WaveHub.exe` and
-`WaveHub-linux-x86_64`, because Wave Hub's own update check links straight to them.
+`scripts/release.sh` lists the tools it needs (cargo-zigbuild, cargo-deb, cargo-generate-rpm,
+mingw-w64, NSIS, makepkg, appimagetool). The macOS files are built on GitHub by
+[`.github/workflows/macos.yml`](.github/workflows/macos.yml), run by hand for a release.
+Release file names must keep the patterns above, because Wave Hub's own update check looks for them.
 
 ## 💛 Thank you, storytold
 

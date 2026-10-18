@@ -3,6 +3,9 @@
 //! `https://github.com/<repo>/releases/latest` redirects to `.../releases/tag/<tag>`, which tells
 //! us the newest release. Download links are then built from the file names in `apps.json`:
 //! `https://github.com/<repo>/releases/download/<tag>/<file>`.
+//!
+//! Development builds can point all of this at a local mock server with
+//! `WAVEHUB_GITHUB_BASE=http://127.0.0.1:8000`.
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -10,6 +13,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
+
+/// `https://github.com`, or the mock server set for tests / development builds.
+pub fn base() -> String {
+    if let Some(b) = BASE_OVERRIDE.get() {
+        return b.clone();
+    }
+    #[cfg(debug_assertions)]
+    if let Ok(b) = std::env::var("WAVEHUB_GITHUB_BASE") {
+        return b.trim_end_matches('/').to_string();
+    }
+    "https://github.com".to_string()
+}
+
+static BASE_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub fn set_base_for_tests(base: &str) {
+    let _ = BASE_OVERRIDE.set(base.to_string());
+}
 
 const USER_AGENT: &str = concat!("WaveHub/", env!("CARGO_PKG_VERSION"));
 
@@ -25,7 +47,7 @@ fn agent(follow_redirects: bool) -> ureq::Agent {
 
 /// The newest stable release's tag, or `None` when the repo has no releases (or doesn't exist).
 pub fn latest_tag(repo: &str) -> Result<Option<String>, String> {
-    let url = format!("https://github.com/{repo}/releases/latest");
+    let url = format!("{}/{repo}/releases/latest", base());
     let resp = agent(false).get(&url).call().map_err(|e| format!("couldn't reach GitHub ({e})"))?;
     let status = resp.status().as_u16();
     if status == 404 {
@@ -35,7 +57,9 @@ pub fn latest_tag(repo: &str) -> Result<Option<String>, String> {
         return Err(format!("GitHub answered {status}"));
     }
     let location = resp.headers().get("location").and_then(|v| v.to_str().ok()).unwrap_or_default();
-    Ok(tag_from_location(location, repo))
+    // GitHub sends an absolute URL; accept a path-only one too.
+    let location = if location.starts_with('/') { format!("https://github.com{location}") } else { location.replacen(&base(), "https://github.com", 1) };
+    Ok(tag_from_location(&location, repo))
 }
 
 /// `https://github.com/<repo>/releases/tag/v1.2.3` -> `v1.2.3`. Anything else (GitHub sends repos
@@ -48,7 +72,24 @@ pub fn tag_from_location(location: &str, repo: &str) -> Option<String> {
 }
 
 pub fn download_url(repo: &str, tag: &str, file: &str) -> String {
-    format!("https://github.com/{repo}/releases/download/{tag}/{file}")
+    format!("{}/{repo}/releases/download/{tag}/{file}", base())
+}
+
+/// The release page that a person reads (always the real GitHub).
+pub fn release_page(repo: &str, tag: &str) -> String {
+    format!("https://github.com/{repo}/releases/tag/{tag}")
+}
+
+/// Whether a release has a file with this name, without downloading it. GitHub answers a
+/// redirect to the file's storage for files that exist and 404 for ones that don't.
+pub fn asset_exists(repo: &str, tag: &str, file: &str) -> Result<bool, String> {
+    let url = download_url(repo, tag, file);
+    let resp = agent(false).head(&url).call().map_err(|e| format!("couldn't reach GitHub ({e})"))?;
+    match resp.status().as_u16() {
+        200..=399 => Ok(true),
+        404 => Ok(false),
+        s => Err(format!("GitHub answered {s} for {file}")),
+    }
 }
 
 /// A small text file from a release (e.g. `SHA256SUMS.txt`). `None` when it isn't there.

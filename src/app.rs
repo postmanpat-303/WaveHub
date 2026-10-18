@@ -15,9 +15,6 @@ use crate::store::{Installed, Kind, Paths, Settings};
 const BUY_ME_A_COFFEE: &str = "https://buymeacoffee.com/postmanpat";
 const PAYPAL: &str = "https://paypal.me/derekh100";
 
-/// Wave Hub's own release file for this computer. Releases must use exactly these names
-/// (see scripts/build-all.sh).
-const LAUNCHER_ASSET: &str = if cfg!(windows) { "WaveHub.exe" } else { "WaveHub-linux-x86_64" };
 
 /// Every colour the window uses, for one theme.
 pub struct Palette {
@@ -154,6 +151,9 @@ struct Shared {
     checked_at: Option<Instant>,
     checking: bool,
     hub_latest: Option<Latest>,
+    /// The release file this computer should get when a newer Wave Hub is out
+    /// (`Ok(None)`: the release has nothing for it).
+    hub_asset: Option<Result<Option<String>, String>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -173,6 +173,18 @@ pub struct WaveHub {
     row_heights: Vec<f32>,
     /// The progress each card's bar shows, easing towards the real value.
     shown_progress: HashMap<String, f32>,
+}
+
+/// The newest Wave Hub and, when it's newer than this one, the file to download.
+fn check_hub(repo: &str) -> (Latest, Option<Result<Option<String>, String>>) {
+    match github::latest_tag(repo) {
+        Ok(Some(tag)) => {
+            let asset = github::is_newer(&tag, env!("CARGO_PKG_VERSION")).then(|| crate::selfupdate::asset_for_this_computer(repo, &tag));
+            (Latest::Found(tag), asset)
+        }
+        Ok(None) => (Latest::NoReleases, None),
+        Err(e) => (Latest::Error(e), None),
+    }
 }
 
 fn lock(s: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
@@ -232,13 +244,10 @@ impl WaveHub {
                 lock(&shared).latest.insert(app.id.clone(), latest);
                 ctx.request_repaint();
             }
-            let hub = match github::latest_tag(&hub_repo) {
-                Ok(Some(tag)) => Latest::Found(tag),
-                Ok(None) => Latest::NoReleases,
-                Err(e) => Latest::Error(e),
-            };
+            let (hub, asset) = check_hub(&hub_repo);
             let mut s = lock(&shared);
             s.hub_latest = Some(hub);
+            s.hub_asset = asset;
             s.checking = false;
             s.checked_at = Some(Instant::now());
             ctx.request_repaint();
@@ -251,12 +260,10 @@ impl WaveHub {
         let repo = self.manifest.launcher_repo.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let hub = match github::latest_tag(&repo) {
-                Ok(Some(tag)) => Latest::Found(tag),
-                Ok(None) => Latest::NoReleases,
-                Err(e) => Latest::Error(e),
-            };
-            lock(&shared).hub_latest = Some(hub);
+            let (hub, asset) = check_hub(&repo);
+            let mut s = lock(&shared);
+            s.hub_latest = Some(hub);
+            s.hub_asset = asset;
             ctx.request_repaint();
         });
     }
@@ -789,10 +796,15 @@ impl WaveHub {
                 }
                 ui.label(RichText::new(text).color(color));
                 if let Some(Latest::Found(tag)) = hub.as_ref().filter(|h| matches!(h, Latest::Found(t) if github::is_newer(t, current))) {
-                    // Straight to this computer's file of the new release.
-                    let url = github::download_url(&self.manifest.launcher_repo, tag, LAUNCHER_ASSET);
-                    link(ui, &format!("Download {LAUNCHER_ASSET}"), &url);
-                    link(ui, "What's new", &format!("https://github.com/{}/releases/tag/{tag}", self.manifest.launcher_repo));
+                    let repo = &self.manifest.launcher_repo;
+                    // Straight to the file that matches how this copy was installed.
+                    let asset = lock(&self.shared).hub_asset.clone();
+                    match asset {
+                        Some(Ok(Some(file))) => link(ui, &format!("Download {file}"), &github::download_url(repo, tag, &file)),
+                        None => {}
+                        Some(_) => link(ui, "Download", &github::release_page(repo, tag)),
+                    }
+                    link(ui, "What's new", &github::release_page(repo, tag));
                 }
             });
         });

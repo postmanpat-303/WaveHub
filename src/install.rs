@@ -26,6 +26,8 @@ pub fn os_label() -> &'static str {
         "Windows"
     } else if cfg!(target_os = "linux") {
         "Linux"
+    } else if cfg!(target_os = "macos") {
+        "macOS"
     } else {
         "this system"
     }
@@ -49,12 +51,18 @@ pub fn plan(spec: &AppSpec, prefer_installer: bool) -> Plan {
     } else if cfg!(target_os = "linux") {
         let l = spec.linux.clone().unwrap_or_default();
         match l.appimage {
-            Some(file) if cfg!(target_arch = "x86_64") => Plan::AppImage { file },
+            Some(file) if l.arches.iter().any(|a| a == std::env::consts::ARCH) => Plan::AppImage { file },
             Some(_) => Plan::Unavailable("No download for this processor yet.".into()),
             None => Plan::Unavailable(l.unavailable.unwrap_or_else(|| "No Linux download yet.".into())),
         }
+    } else if cfg!(target_os = "macos") {
+        let m = spec.macos.clone().unwrap_or_default();
+        match (m.zip, m.exe) {
+            (Some(file), Some(exe)) => Plan::Portable { file, exe },
+            _ => Plan::Unavailable(m.unavailable.unwrap_or_else(|| "No macOS download yet.".into())),
+        }
     } else {
-        Plan::Unavailable("Wave Hub supports Windows and Linux.".into())
+        Plan::Unavailable("Wave Hub supports Windows, Linux and macOS.".into())
     }
 }
 
@@ -200,6 +208,12 @@ fn install_portable(spec: &AppSpec, zip_path: &Path, exe: &str, paths: &Paths) -
             }
             let mut f = std::fs::File::create(&out).map_err(|e| e.to_string())?;
             std::io::copy(&mut entry, &mut f).map_err(|e| e.to_string())?;
+            // Keep the "can run" bit (a macOS .app's program needs it).
+            #[cfg(unix)]
+            if let Some(mode) = entry.unix_mode() {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&out, std::fs::Permissions::from_mode(mode & 0o777)).map_err(|e| e.to_string())?;
+            }
         }
         if !staging.join(exe).is_file() {
             return Err(format!("the zip doesn't contain {exe}"));
@@ -307,6 +321,26 @@ fn installer_command(setup: &Path, args: &[String]) -> Command {
 
 #[cfg(test)]
 mod tests {
+    /// Unpacks a real macOS app zip the way Wave Hub does on a Mac and checks the program
+    /// keeps its "can run" bit. Run with
+    /// `WAVEHUB_TEST_MAC_ZIP=BigWaveRadio-0.9.6-macos-universal.zip cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    #[cfg(unix)]
+    fn unpacks_a_mac_app_zip() {
+        use std::os::unix::fs::PermissionsExt;
+        let zip = std::env::var("WAVEHUB_TEST_MAC_ZIP").expect("set WAVEHUB_TEST_MAC_ZIP");
+        let m: crate::manifest::Manifest = serde_json::from_str(include_str!("../apps.json")).unwrap();
+        let spec = m.apps.iter().find(|a| a.id == "bigwave-radio").unwrap();
+        let exe = spec.macos.as_ref().unwrap().exe.clone().unwrap();
+        let paths = crate::store::Paths { data: std::env::temp_dir().join(format!("wavehub-mac-{}", std::process::id())) };
+        let path = super::install_portable(spec, std::path::Path::new(&zip), &exe, &paths).unwrap();
+        assert!(path.ends_with("BigWave Radio.app/Contents/MacOS/BigWaveRadio"));
+        assert!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o111 != 0);
+        assert!(path.parent().unwrap().parent().unwrap().join("Info.plist").is_file());
+        let _ = std::fs::remove_dir_all(&paths.data);
+    }
+
     #[test]
     fn display_icon() {
         let out = "\r\nHKEY_CURRENT_USER\\Software\\...\\StreamWave\r\n    DisplayIcon    REG_SZ    \"C:\\Users\\d\\AppData\\Local\\StreamWave\\StreamWave.exe\"\r\n";
@@ -396,7 +430,13 @@ pub fn is_running(path: &Path) -> bool {
     out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).to_ascii_lowercase().contains(&name.to_ascii_lowercase()))
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(target_os = "macos")]
+pub fn is_running(path: &Path) -> bool {
+    // `pgrep -f` matches the full command line, which starts with the program's path.
+    Command::new("pgrep").arg("-f").arg(path).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn is_running(_path: &Path) -> bool {
     false
 }
@@ -404,6 +444,6 @@ pub fn is_running(_path: &Path) -> bool {
 /// Opens a folder in the file manager.
 pub fn reveal(path: &Path) {
     let _ = std::fs::create_dir_all(path);
-    let program = if cfg!(windows) { "explorer" } else { "xdg-open" };
+    let program = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     let _ = Command::new(program).arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }

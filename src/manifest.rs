@@ -35,6 +35,8 @@ pub struct AppSpec {
     pub windows: Option<WindowsSpec>,
     #[serde(default)]
     pub linux: Option<LinuxSpec>,
+    #[serde(default)]
+    pub macos: Option<MacSpec>,
 }
 
 fn default_accent() -> [u8; 3] {
@@ -65,13 +67,33 @@ pub struct WindowsSpec {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct LinuxSpec {
+    /// May contain `{arch}` (`x86_64` or `aarch64`).
     pub appimage: Option<String>,
+    /// Processors the AppImage is built for.
+    #[serde(default = "default_arches")]
+    pub arches: Vec<String>,
     /// Shown instead of an Install button when there is no Linux download.
     pub unavailable: Option<String>,
 }
 
+fn default_arches() -> Vec<String> {
+    vec!["x86_64".into()]
+}
+
+/// A zip with the `.app` at its root (as `ditto -c -k --keepParent` makes it).
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct MacSpec {
+    pub zip: Option<String>,
+    /// The program inside the zip, e.g. `BigWave Radio.app/Contents/MacOS/BigWaveRadio`.
+    pub exe: Option<String>,
+    pub unavailable: Option<String>,
+}
+
 pub fn fill(template: &str, tag: &str) -> String {
-    template.replace("{version}", tag.trim_start_matches('v')).replace("{tag}", tag)
+    template
+        .replace("{version}", tag.trim_start_matches('v'))
+        .replace("{tag}", tag)
+        .replace("{arch}", std::env::consts::ARCH)
 }
 
 pub fn load(data_dir: &std::path::Path) -> Manifest {
@@ -92,5 +114,8 @@ mod tests {
         let m: super::Manifest = serde_json::from_str(super::BUILT_IN).unwrap();
         assert_eq!(m.apps.len(), 3);
         assert_eq!(super::fill("A-{version}-x.zip", "v0.9.6"), "A-0.9.6-x.zip");
+        assert_eq!(super::fill("A-{version}-linux-{arch}.AppImage", "v1"), format!("A-1-linux-{}.AppImage", std::env::consts::ARCH));
+        assert!(m.apps[0].linux.as_ref().unwrap().arches.contains(&"aarch64".to_string()));
+        assert_eq!(m.apps[2].linux.as_ref().unwrap().arches, ["x86_64"]);
     }
 }

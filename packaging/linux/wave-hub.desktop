@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Wave Hub
+GenericName=App Launcher
+Comment=Install, update and open BigWave Radio, ChipWave Tracker and StreamWave
+Exec=wave-hub
+Icon=wave-hub
+Terminal=false
+Categories=Utility;
+Keywords=launcher;installer;updater;wave;audio;radio;tracker;
+StartupWMClass=wave-hub
+StartupNotify=true

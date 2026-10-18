@@ -1,6 +1,6 @@
 [package]
 name = "wave-hub"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 authors = ["Derek Heasley"]
@@ -19,6 +19,67 @@ serde_json = "1"
 sha2 = "0.10"
 dirs = "6"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# --- Linux packages (scripts/package-linux.sh) ---
+[package.metadata.deb]
+name = "wave-hub"
+maintainer = "Derek Heasley <https://github.com/postmanpat-303>"
+copyright = "2026 Derek Heasley"
+license-file = ["LICENSE", "0"]
+extended-description = """Wave Hub is a free launcher that installs, updates and opens the Wave apps \
+(BigWave Radio, ChipWave Tracker and StreamWave), checking every download against its checksum."""
+section = "utils"
+priority = "optional"
+# Built for glibc 2.31+ (cargo zigbuild), so no $auto: it would ask for the build machine's glibc.
+# winit/glow dlopen the windowing and GL libraries.
+depends = "libc6 (>= 2.31), libxkbcommon0, libxkbcommon-x11-0, libx11-6, libxcursor1, libxrandr2, libxi6, libgl1, libegl1, libwayland-client0, libwayland-cursor0, libwayland-egl1, xdg-utils"
+assets = [
+    ["target/release/wave-hub", "usr/bin/wave-hub", "755"],
+    ["packaging/linux/wave-hub.desktop", "usr/share/applications/", "644"],
+    ["packaging/linux/wave-hub.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["assets/icons/wavehub_16.png", "usr/share/icons/hicolor/16x16/apps/wave-hub.png", "644"],
+    ["assets/icons/wavehub_32.png", "usr/share/icons/hicolor/32x32/apps/wave-hub.png", "644"],
+    ["assets/icons/wavehub_48.png", "usr/share/icons/hicolor/48x48/apps/wave-hub.png", "644"],
+    ["assets/icons/wavehub_64.png", "usr/share/icons/hicolor/64x64/apps/wave-hub.png", "644"],
+    ["assets/icons/wavehub_128.png", "usr/share/icons/hicolor/128x128/apps/wave-hub.png", "644"],
+    ["assets/icons/wavehub_256.png", "usr/share/icons/hicolor/256x256/apps/wave-hub.png", "644"],
+    ["assets/icons/wavehub_512.png", "usr/share/icons/hicolor/512x512/apps/wave-hub.png", "644"],
+    ["README.md", "usr/share/doc/wave-hub/README.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "wave-hub"
+summary = "Install, update and open the Wave apps"
+license = "MIT"
+url = "https://github.com/postmanpat-303/WaveHub"
+assets = [
+    { source = "target/release/wave-hub", dest = "/usr/bin/wave-hub", mode = "755" },
+    { source = "packaging/linux/wave-hub.desktop", dest = "/usr/share/applications/wave-hub.desktop", mode = "644" },
+    { source = "packaging/linux/wave-hub.metainfo.xml", dest = "/usr/share/metainfo/wave-hub.metainfo.xml", mode = "644" },
+    { source = "assets/icons/wavehub_16.png", dest = "/usr/share/icons/hicolor/16x16/apps/wave-hub.png", mode = "644" },
+    { source = "assets/icons/wavehub_32.png", dest = "/usr/share/icons/hicolor/32x32/apps/wave-hub.png", mode = "644" },
+    { source = "assets/icons/wavehub_48.png", dest = "/usr/share/icons/hicolor/48x48/apps/wave-hub.png", mode = "644" },
+    { source = "assets/icons/wavehub_64.png", dest = "/usr/share/icons/hicolor/64x64/apps/wave-hub.png", mode = "644" },
+    { source = "assets/icons/wavehub_128.png", dest = "/usr/share/icons/hicolor/128x128/apps/wave-hub.png", mode = "644" },
+    { source = "assets/icons/wavehub_256.png", dest = "/usr/share/icons/hicolor/256x256/apps/wave-hub.png", mode = "644" },
+    { source = "assets/icons/wavehub_512.png", dest = "/usr/share/icons/hicolor/512x512/apps/wave-hub.png", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/licenses/wave-hub/LICENSE", mode = "644", doc = true },
+]
+
+# Loaded with dlopen at run time, so automatic requires can't see them.
+[package.metadata.generate-rpm.requires]
+libxkbcommon = "*"
+libxkbcommon-x11 = "*"
+libX11 = "*"
+libXcursor = "*"
+libXrandr = "*"
+libXi = "*"
+libglvnd-glx = "*"
+libglvnd-egl = "*"
+libwayland-client = "*"
+libwayland-cursor = "*"
+libwayland-egl = "*"
+xdg-utils = "*"
 
 [build-dependencies]
 winresource = "0.1"
