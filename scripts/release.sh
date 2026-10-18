@@ -14,6 +14,10 @@
 #   WaveHub-<v>-linux-<arch>.tar.gz
 #   WaveHub.exe, WaveHub-linux-x86_64   bare programs under 0.1.0's names: 0.1.0's
 #                                       "Check for updates" links straight to these
+#   WaveHub-setup-x64.exe, WaveHub-linux-<arch>.AppImage, WaveHub-macos-universal.dmg
+#                                       versionless copies (--sums-only makes them), so the
+#                                       website's .../releases/latest/download/<name> links
+#                                       never go stale
 #
 # Needs: rustup targets x86_64-pc-windows-gnu, x86_64-/aarch64-unknown-linux-gnu; cargo-zigbuild
 # + zig (Linux builds for glibc 2.31+); cargo-deb; cargo-generate-rpm; mingw-w64; nsis; zip;
@@ -23,7 +27,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 OUT="dist/v$VER"
+# Versionless copies of the main downloads (from 0.2.4 on).
+versionless() {
+  local f
+  for f in setup-x64.exe linux-x86_64.AppImage linux-aarch64.AppImage macos-universal.dmg; do
+    if [ -f "$OUT/WaveHub-$VER-$f" ]; then cp -f "$OUT/WaveHub-$VER-$f" "$OUT/WaveHub-$f"; else echo "note: no WaveHub-$VER-$f, so no WaveHub-$f" >&2; fi
+  done
+}
 if [ "${1:-}" = "--sums-only" ]; then
+  versionless
   (cd "$OUT" && sha256sum WaveHub* | sort -k2 > SHA256SUMS.txt && cat SHA256SUMS.txt)
   exit 0
 fi
