@@ -72,6 +72,10 @@ pub struct LinuxSpec {
     /// Processors the AppImage is built for.
     #[serde(default = "default_arches")]
     pub arches: Vec<String>,
+    /// Where the app's own .deb / .rpm / Arch package puts the program, so Wave Hub can
+    /// show it as installed (and remove it with the package manager).
+    #[serde(default)]
+    pub system_exe: Vec<String>,
     /// Shown instead of an Install button when there is no Linux download.
     pub unavailable: Option<String>,
 }
@@ -87,13 +91,14 @@ pub struct MacSpec {
     /// The program inside the zip, e.g. `BigWave Radio.app/Contents/MacOS/BigWaveRadio`.
     pub exe: Option<String>,
     pub unavailable: Option<String>,
+    /// Where the app's own .dmg puts it, e.g. `/Applications/BigWave Radio.app`; `~` is the
+    /// home folder. Lets Wave Hub show a copy installed by hand.
+    #[serde(default)]
+    pub installed_app: Vec<String>,
 }
 
 pub fn fill(template: &str, tag: &str) -> String {
-    template
-        .replace("{version}", tag.trim_start_matches('v'))
-        .replace("{tag}", tag)
-        .replace("{arch}", std::env::consts::ARCH)
+    template.replace("{version}", tag.trim_start_matches('v')).replace("{tag}", tag).replace("{arch}", std::env::consts::ARCH)
 }
 
 pub fn load(data_dir: &std::path::Path) -> Manifest {

@@ -41,6 +41,14 @@ version comes out, click **Update**. That's it. No account, no ads, no tracking.
   - Windows: `%LOCALAPPDATA%\WaveHub\apps`, using each app's portable version.
     StreamWave only comes with an installer, so Wave Hub runs it quietly in the background.
   - Linux: `~/.local/share/WaveHub/apps`, using each app's AppImage.
+- **Uninstall** any app from its card's **•••** menu, after a "Remove StreamWave? Your settings
+  stay." check. Wave Hub's own copies are deleted; apps installed with their own setup are
+  removed with their own uninstaller, quietly; Linux packages through the package manager.
+- **Finds apps you installed yourself** (with their Windows setup, a Linux package, or into
+  Applications on a Mac), so they show as installed and can be updated or uninstalled.
+- **Spots missing files.** If an app's program has gone (for example Windows Security
+  quarantined it), the card says **Files missing** and offers **Repair**. **•••** also has
+  **Reinstall**.
 - ChipWave Tracker has no Linux download yet, so on Linux its card says "Windows only for now"
   and links to the build-from-source instructions.
 - **Raspberry Pi and other ARM Linux** too, and **macOS** for BigWave Radio.

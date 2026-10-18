@@ -35,7 +35,12 @@ impl Paths {
 pub enum Kind {
     AppImage,
     PortableZip,
+    /// Installed by the app's own setup program (by Wave Hub, or found on this PC).
     Installer,
+    /// Linux: installed with the system's package manager (.deb, .rpm, Arch package).
+    SystemPackage,
+    /// macOS: an `.app` found in Applications.
+    MacApp,
 }
 
 impl Kind {
@@ -44,6 +49,8 @@ impl Kind {
             Kind::AppImage => "AppImage",
             Kind::PortableZip => "portable",
             Kind::Installer => "installer",
+            Kind::SystemPackage => "package",
+            Kind::MacApp => "app",
         }
     }
 }
@@ -57,6 +64,9 @@ pub struct Record {
     pub path: PathBuf,
     /// Unix seconds.
     pub installed_at: u64,
+    /// Found on this computer rather than installed by Wave Hub.
+    #[serde(default)]
+    pub external: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

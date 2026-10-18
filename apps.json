@@ -31,11 +31,18 @@
         "arches": [
           "x86_64",
           "aarch64"
+        ],
+        "system_exe": [
+          "/usr/bin/bigwave-radio"
         ]
       },
       "macos": {
         "zip": "BigWaveRadio-{version}-macos-universal.zip",
-        "exe": "BigWave Radio.app/Contents/MacOS/BigWaveRadio"
+        "exe": "BigWave Radio.app/Contents/MacOS/BigWaveRadio",
+        "installed_app": [
+          "/Applications/BigWave Radio.app",
+          "~/Applications/BigWave Radio.app"
+        ]
       }
     },
     {

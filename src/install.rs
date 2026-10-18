@@ -35,13 +35,10 @@ pub fn os_label() -> &'static str {
 
 pub fn plan(spec: &AppSpec, prefer_installer: bool) -> Plan {
     if cfg!(windows) {
-        let Some(w) = &spec.windows else { return Plan::Unavailable("No Windows download yet.".into()) };
-        let installer = w.installer.clone().map(|file| Plan::Installer {
-            file,
-            exe_candidates: w.installed_exe.clone(),
-            silent_args: w.silent_args.clone(),
-            uninstall_key: w.uninstall_key.clone(),
-        });
+        let Some(w) = &spec.windows else {
+            return Plan::Unavailable("No Windows download yet.".into());
+        };
+        let installer = w.installer.clone().map(|file| Plan::Installer { file, exe_candidates: w.installed_exe.clone(), silent_args: w.silent_args.clone(), uninstall_key: w.uninstall_key.clone() });
         let portable = match (&w.portable, &w.exe) {
             (Some(file), Some(exe)) => Some(Plan::Portable { file: file.clone(), exe: exe.clone() }),
             _ => None,
@@ -71,23 +68,20 @@ pub enum Phase {
     /// Waiting its turn behind another app (Update all).
     Queued,
     Checking,
-    Downloading { done: u64, total: u64 },
+    Downloading {
+        done: u64,
+        total: u64,
+    },
     Verifying,
     Installing,
     /// The official setup program is running (silently where it can).
     RunningInstaller,
+    /// Being uninstalled.
+    Removing,
 }
 
 /// Downloads, checks and installs `tag` of `spec`. `previous` is what's installed now, if anything.
-pub fn install(
-    spec: &AppSpec,
-    tag: &str,
-    plan: &Plan,
-    paths: &Paths,
-    previous: Option<&Record>,
-    cancel: &AtomicBool,
-    report: &mut dyn FnMut(Phase),
-) -> Result<Record, String> {
+pub fn install(spec: &AppSpec, tag: &str, plan: &Plan, paths: &Paths, previous: Option<&Record>, cancel: &AtomicBool, report: &mut dyn FnMut(Phase)) -> Result<Record, String> {
     if let Some(prev) = previous {
         if is_running(&prev.path) {
             return Err(format!("{} is open. Close it first, then try again.", spec.name));
@@ -103,13 +97,9 @@ pub fn install(
         Some(sums) => {
             let text = github::get_text(&github::download_url(&spec.repo, tag, sums))?;
             match text {
-                Some(text) => Some(
-                    github::parse_sums(&text)
-                        .into_iter()
-                        .find(|(_, name)| *name == file)
-                        .map(|(hash, _)| hash)
-                        .ok_or_else(|| format!("{sums} doesn't list {file}, so it can't be checked."))?,
-                ),
+                Some(text) => {
+                    Some(github::parse_sums(&text).into_iter().find(|(_, name)| *name == file).map(|(hash, _)| hash).ok_or_else(|| format!("{sums} doesn't list {file}, so it can't be checked."))?)
+                }
                 // Older releases may not have one; install unchecked rather than not at all.
                 None => None,
             }
@@ -140,7 +130,7 @@ pub fn install(
 
     report(Phase::Installing);
     let version = tag.trim_start_matches('v').to_string();
-    let record = |kind, path| Record { version: version.clone(), tag: tag.to_string(), kind, path, installed_at: now() };
+    let record = |kind, path| Record { version: version.clone(), tag: tag.to_string(), kind, path, installed_at: now(), external: false };
     let result = match plan {
         Plan::AppImage { .. } => install_appimage(spec, &part, paths).map(|p| record(Kind::AppImage, p)),
         Plan::Portable { exe, .. } => install_portable(spec, &part, exe, paths).map(|p| record(Kind::PortableZip, p)),
@@ -163,7 +153,7 @@ pub fn install(
     result
 }
 
-fn app_dir(spec: &AppSpec, paths: &Paths) -> PathBuf {
+pub(crate) fn app_dir(spec: &AppSpec, paths: &Paths) -> PathBuf {
     paths.apps().join(&spec.id)
 }
 
@@ -197,7 +187,9 @@ fn install_portable(spec: &AppSpec, zip_path: &Path, exe: &str, paths: &Paths) -
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
             // `enclosed_name` refuses paths that would escape the folder.
-            let Some(rel) = entry.enclosed_name() else { return Err("the zip contains an unsafe path".into()) };
+            let Some(rel) = entry.enclosed_name() else {
+                return Err("the zip contains an unsafe path".into());
+            };
             let out = staging.join(rel);
             if entry.is_dir() {
                 std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
@@ -248,31 +240,25 @@ fn run_installer(spec: &AppSpec, part: &Path, file: &str, args: &[String], candi
         let code = status.code().map(|c| format!(" (code {c})")).unwrap_or_default();
         return Err(format!("{}'s installer stopped before finishing{code}. Try again, or run it yourself from the release page.", spec.name));
     }
-    found
-        .ok_or_else(|| format!("The installer finished, but {} wasn't found afterwards. If Windows asked for permission and you said no, that's fine: try again.", spec.name))
+    found.ok_or_else(|| format!("The installer finished, but {} wasn't found afterwards. If Windows asked for permission and you said no, that's fine: try again.", spec.name))
 }
 
 /// Where the official installer put the program, if it did.
 pub fn find_installed(candidates: &[String]) -> Option<PathBuf> {
     let local = dirs::data_local_dir().map(|p| p.display().to_string()).unwrap_or_default();
     let program_files = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
-    candidates
-        .iter()
-        .map(|c| PathBuf::from(c.replace("{localappdata}", &local).replace("{programfiles}", &program_files)))
-        .find(|p| p.is_file())
+    candidates.iter().map(|c| PathBuf::from(c.replace("{localappdata}", &local).replace("{programfiles}", &program_files))).find(|p| p.is_file())
 }
 
 /// The program named by an installer's `DisplayIcon` (per-user first, then per-machine).
 #[cfg(windows)]
-fn registry_exe(key: &str) -> Option<PathBuf> {
+pub(crate) fn registry_exe(key: &str) -> Option<PathBuf> {
     use std::os::windows::process::CommandExt;
     for root in ["HKCU", "HKLM", r"HKLM\SOFTWARE\WOW6432Node"] {
-        let path = if root.contains('\\') {
-            format!(r"{root}\Microsoft\Windows\CurrentVersion\Uninstall\{key}")
-        } else {
-            format!(r"{root}\Software\Microsoft\Windows\CurrentVersion\Uninstall\{key}")
+        let path = if root.contains('\\') { format!(r"{root}\Microsoft\Windows\CurrentVersion\Uninstall\{key}") } else { format!(r"{root}\Software\Microsoft\Windows\CurrentVersion\Uninstall\{key}") };
+        let Ok(out) = Command::new("reg").args(["query", &path, "/v", "DisplayIcon"]).creation_flags(0x0800_0000).output() else {
+            continue;
         };
-        let Ok(out) = Command::new("reg").args(["query", &path, "/v", "DisplayIcon"]).creation_flags(0x0800_0000).output() else { continue };
         let text = String::from_utf8_lossy(&out.stdout);
         if let Some(exe) = parse_display_icon(&text) {
             if exe.is_file() {
@@ -284,13 +270,13 @@ fn registry_exe(key: &str) -> Option<PathBuf> {
 }
 
 #[cfg(not(windows))]
-fn registry_exe(_key: &str) -> Option<PathBuf> {
+pub(crate) fn registry_exe(_key: &str) -> Option<PathBuf> {
     None
 }
 
 /// `    DisplayIcon    REG_SZ    "C:\x\App.exe",0` -> `C:\x\App.exe`.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn parse_display_icon(reg_output: &str) -> Option<PathBuf> {
+pub(crate) fn parse_display_icon(reg_output: &str) -> Option<PathBuf> {
     let line = reg_output.lines().find(|l| l.trim_start().starts_with("DisplayIcon"))?;
     let value = line.split("REG_SZ").nth(1)?.trim();
     let value = value.trim_matches('"');
@@ -302,7 +288,7 @@ fn parse_display_icon(reg_output: &str) -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-fn installer_command(setup: &Path, args: &[String]) -> Command {
+pub(crate) fn installer_command(setup: &Path, args: &[String]) -> Command {
     use std::os::windows::process::CommandExt;
     // `start /wait` goes through the shell, so an installer that needs admin rights gets the
     // usual Windows prompt, and we still wait for it to finish. `/S` keeps NSIS quiet.
@@ -313,7 +299,7 @@ fn installer_command(setup: &Path, args: &[String]) -> Command {
 }
 
 #[cfg(not(windows))]
-fn installer_command(setup: &Path, args: &[String]) -> Command {
+pub(crate) fn installer_command(setup: &Path, args: &[String]) -> Command {
     let mut cmd = Command::new(setup);
     cmd.args(args);
     cmd
@@ -353,11 +339,7 @@ mod tests {
 /// Starts the app on its own; it keeps running if Wave Hub closes.
 pub fn open(path: &Path) -> Result<(), String> {
     if !path.is_file() {
-        let hint = if cfg!(windows) {
-            " If Windows Security removed it, see Windows Security > Virus & threat protection > Protection history."
-        } else {
-            ""
-        };
+        let hint = if cfg!(windows) { " If Windows Security removed it, see Windows Security > Virus & threat protection > Protection history." } else { "" };
         return Err(format!("{} is missing. Try installing again.{hint}", path.display()));
     }
     let mut cmd = Command::new(path);
@@ -397,25 +379,12 @@ fn start_error(path: &Path, e: &std::io::Error) -> String {
     }
 }
 
-/// Removes an app that Wave Hub installed into its own folder.
-pub fn remove(spec: &AppSpec, record: &Record, paths: &Paths) -> Result<(), String> {
-    if record.kind == Kind::Installer {
-        return Err(format!("{} was installed with its own installer. Remove it from Windows Settings > Apps.", spec.name));
-    }
-    if is_running(&record.path) {
-        return Err(format!("{} is open. Close it first.", spec.name));
-    }
-    let dir = app_dir(spec, paths);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
 /// Whether a program started from `path` is running.
 #[cfg(target_os = "linux")]
 pub fn is_running(path: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir("/proc") else { return false };
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
     let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let target_str = target.to_string_lossy().into_owned();
     for entry in entries.flatten() {
@@ -434,6 +403,13 @@ pub fn is_running(path: &Path) -> bool {
                 return true;
             }
         }
+        // Only count programs running from the AppImage's own mount (or extracted copy) in
+        // the temp folder: system helpers it started, such as a session dbus-daemon, inherit
+        // APPIMAGE too and can outlive the app.
+        let from_mount = std::fs::read_link(proc_dir.join("exe")).is_ok_and(|exe| exe.starts_with(std::env::temp_dir()));
+        if !from_mount {
+            continue;
+        }
         if let Ok(environ) = std::fs::read(proc_dir.join("environ")) {
             let needle = format!("APPIMAGE={target_str}");
             if environ.split(|b| *b == 0).any(|kv| kv == needle.as_bytes()) {
@@ -447,11 +423,10 @@ pub fn is_running(path: &Path) -> bool {
 #[cfg(windows)]
 pub fn is_running(path: &Path) -> bool {
     use std::os::windows::process::CommandExt;
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
-    let out = Command::new("tasklist")
-        .args(["/FI", &format!("IMAGENAME eq {name}"), "/NH", "/FO", "CSV"])
-        .creation_flags(0x0800_0000)
-        .output();
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let out = Command::new("tasklist").args(["/FI", &format!("IMAGENAME eq {name}"), "/NH", "/FO", "CSV"]).creation_flags(0x0800_0000).output();
     out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).to_ascii_lowercase().contains(&name.to_ascii_lowercase()))
 }
 
@@ -469,6 +444,12 @@ pub fn is_running(_path: &Path) -> bool {
 /// Opens a folder in the file manager.
 pub fn reveal(path: &Path) {
     let _ = std::fs::create_dir_all(path);
-    let program = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let program = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
     let _ = Command::new(program).arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }

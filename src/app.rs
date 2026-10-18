@@ -10,11 +10,10 @@ use egui::{vec2, Align, Color32, CornerRadius, FontId, Layout, Margin, RichText,
 use crate::github;
 use crate::install::{self, Phase, Plan};
 use crate::manifest::{self, AppSpec, Manifest};
-use crate::store::{Installed, Kind, Paths, Settings};
+use crate::store::{Installed, Kind, Paths, Record, Settings};
 
 const BUY_ME_A_COFFEE: &str = "https://buymeacoffee.com/postmanpat";
 const PAYPAL: &str = "https://paypal.me/derekh100";
-
 
 /// Every colour the window uses, for one theme.
 pub struct Palette {
@@ -70,7 +69,11 @@ const LIGHT_PALETTE: Palette = Palette {
 static DARK_MODE: AtomicBool = AtomicBool::new(false);
 
 fn p() -> &'static Palette {
-    if DARK_MODE.load(Ordering::Relaxed) { &DARK_PALETTE } else { &LIGHT_PALETTE }
+    if DARK_MODE.load(Ordering::Relaxed) {
+        &DARK_PALETTE
+    } else {
+        &LIGHT_PALETTE
+    }
 }
 
 /// A rounded card with a soft shadow in light mode, a fine outline in dark mode.
@@ -100,7 +103,11 @@ const WAVE_ORANGE: Color32 = Color32::from_rgb(255, 112, 10);
 /// Readable text colour on top of `fill`.
 fn on(fill: Color32) -> Color32 {
     let lum = 0.299 * fill.r() as f32 + 0.587 * fill.g() as f32 + 0.114 * fill.b() as f32;
-    if lum > 150.0 { INK } else { Color32::WHITE }
+    if lum > 150.0 {
+        INK
+    } else {
+        Color32::WHITE
+    }
 }
 
 fn icon_bytes(name: &str) -> Option<&'static [u8]> {
@@ -128,6 +135,8 @@ struct Job {
     speed: f64,
     /// Whether this replaces an installed version (for the wording at the end).
     update: bool,
+    /// Reinstalling the same version (Repair / Reinstall).
+    repair: bool,
 }
 
 /// Something that went wrong, shown on the card until it's retried or dismissed.
@@ -173,6 +182,45 @@ pub struct WaveHub {
     row_heights: Vec<f32>,
     /// The progress each card's bar shows, easing towards the real value.
     shown_progress: HashMap<String, f32>,
+    /// The app whose "Remove …?" box is open.
+    confirm_uninstall: Option<String>,
+}
+
+/// Whether Wave Hub can update this install itself. Package-manager and hand-installed Mac
+/// copies are updated the way they were installed.
+fn hub_can_update(r: &Record) -> bool {
+    !matches!(r.kind, Kind::SystemPackage | Kind::MacApp)
+}
+
+/// The install plan for this app, keeping to the setup program when that's how it's installed.
+fn plan_for(spec: &AppSpec, prefer_installer: bool, record: Option<&Record>) -> Plan {
+    install::plan(spec, prefer_installer || record.is_some_and(|r| r.kind == Kind::Installer))
+}
+
+/// Adds apps found on this computer that Wave Hub doesn't know about (installed with their own
+/// setup, a package manager or by hand), and forgets ones that have gone.
+fn find_external(shared: &Arc<Mutex<Shared>>, paths: &Paths, apps: &[AppSpec]) {
+    // Wave Hub's own installs are known; ones found before are looked up again, in case
+    // they've been updated or removed outside Wave Hub since.
+    let known: Vec<String> = lock(shared).installed.apps.iter().filter(|(_, r)| !r.external).map(|(id, _)| id.clone()).collect();
+    let found: Vec<(String, Record)> = apps.iter().filter(|a| !known.contains(&a.id)).filter_map(|a| crate::uninstall::find_external(a).map(|r| (a.id.clone(), r))).collect();
+    let mut s = lock(shared);
+    let before = s.installed.apps.len();
+    let busy: Vec<String> = s.jobs.keys().cloned().collect();
+    // Keep installs whose program file went missing (shown as FILES MISSING, with Repair);
+    // forget ones that were uninstalled or deleted outside Wave Hub.
+    s.installed.apps.retain(|id, r| busy.contains(id) || apps.iter().find(|a| a.id == *id).is_some_and(|a| crate::uninstall::check_files(a, r, paths) != crate::uninstall::Files::Gone));
+    let mut changed = before != s.installed.apps.len();
+    for (id, r) in found {
+        let replace = s.installed.apps.get(&id).is_none_or(|old| old.external && (old.version != r.version || old.path != r.path || old.kind != r.kind));
+        if !s.jobs.contains_key(&id) && replace {
+            s.installed.apps.insert(id, r);
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = s.installed.save(paths);
+    }
 }
 
 /// The newest Wave Hub and, when it's newer than this one, the file to download.
@@ -204,15 +252,17 @@ impl WaveHub {
         install_fonts(&cc.egui_ctx);
         apply_theme(&cc.egui_ctx);
         let mut installed = Installed::load(&paths);
-        // Forget installs whose program has gone (deleted by hand, or uninstalled in Windows).
-        installed.apps.retain(|_, r| r.path.exists());
+        // Forget installs that were uninstalled or deleted outside Wave Hub; keep ones whose
+        // program file alone went missing, so the card can offer Repair.
+        installed.apps.retain(|id, r| manifest.apps.iter().find(|a| a.id == *id).is_some_and(|a| crate::uninstall::check_files(a, r, &paths) != crate::uninstall::Files::Gone));
         let shared = Arc::new(Mutex::new(Shared { installed, ..Default::default() }));
         let tab = match std::env::var("WAVEHUB_START_TAB").as_deref() {
             Ok("community") => Tab::Community,
             Ok("about") => Tab::About,
             _ => Tab::Apps,
         };
-        let hub = Self { manifest, paths, settings, shared, tab, row_heights: Vec::new(), shown_progress: HashMap::new() };
+        let confirm_uninstall = std::env::var("WAVEHUB_CONFIRM_UNINSTALL").ok();
+        let hub = Self { manifest, paths, settings, shared, tab, row_heights: Vec::new(), shown_progress: HashMap::new(), confirm_uninstall };
         hub.check_now(&cc.egui_ctx);
         hub
     }
@@ -233,8 +283,11 @@ impl WaveHub {
         let shared = self.shared.clone();
         let apps = self.manifest.apps.clone();
         let hub_repo = self.manifest.launcher_repo.clone();
+        let paths = self.paths.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
+            find_external(&shared, &paths, &apps);
+            ctx.request_repaint();
             for app in apps {
                 let latest = match github::latest_tag(&app.repo) {
                     Ok(Some(tag)) => Latest::Found(tag),
@@ -270,19 +323,36 @@ impl WaveHub {
 
     /// Installs or updates these apps one after another in the background.
     fn start_installs(&self, ctx: &egui::Context, ids: Vec<String>) {
+        self.start_jobs(ctx, ids, false);
+    }
+
+    /// Downloads and installs the installed version again (Repair, Reinstall). Falls back to
+    /// the latest when Wave Hub doesn't know which version it is.
+    fn start_reinstall(&self, ctx: &egui::Context, id: &str) {
+        self.start_jobs(ctx, vec![id.to_string()], true);
+    }
+
+    fn start_jobs(&self, ctx: &egui::Context, ids: Vec<String>, repair: bool) {
         let mut queued = Vec::new();
         {
             let mut s = lock(&self.shared);
             for id in ids {
-                let Some(spec) = self.manifest.apps.iter().find(|a| a.id == id) else { continue };
-                let Some(Latest::Found(tag)) = s.latest.get(&id).cloned() else { continue };
+                let Some(spec) = self.manifest.apps.iter().find(|a| a.id == id) else {
+                    continue;
+                };
+                let same = s.installed.apps.get(&id).filter(|_| repair).map(|r| if !r.tag.is_empty() { r.tag.clone() } else { format!("v{}", r.version) }).filter(|t| t.len() > 1);
+                let tag = match (same, s.latest.get(&id).cloned()) {
+                    (Some(t), _) => t,
+                    (None, Some(Latest::Found(t))) => t,
+                    _ => continue,
+                };
                 if s.jobs.contains_key(&id) {
                     continue;
                 }
                 let cancel = Arc::new(AtomicBool::new(false));
                 let update = s.installed.apps.contains_key(&id);
                 let phase = if queued.is_empty() { Phase::Checking } else { Phase::Queued };
-                s.jobs.insert(id.clone(), Job { phase, cancel: cancel.clone(), speed: 0.0, update });
+                s.jobs.insert(id.clone(), Job { phase, cancel: cancel.clone(), speed: 0.0, update, repair });
                 s.errors.remove(&id);
                 s.notes.remove(&id);
                 s.finished.remove(&id);
@@ -345,7 +415,11 @@ impl WaveHub {
                     self.start_installs(&ctx, updates);
                 }
                 let checking = lock(&self.shared).checking;
-                let refresh = egui::Button::new(RichText::new(if checking { "Checking…" } else { "Check now" }).color(p().text)).fill(p().soft).stroke(Stroke::NONE).corner_radius(18.0).min_size(vec2(0.0, 34.0));
+                let refresh = egui::Button::new(RichText::new(if checking { "Checking…" } else { "Check now" }).color(p().text))
+                    .fill(p().soft)
+                    .stroke(Stroke::NONE)
+                    .corner_radius(18.0)
+                    .min_size(vec2(0.0, 34.0));
                 if ui.add_enabled(!checking, refresh).clicked() {
                     self.check_now(&ctx);
                 }
@@ -359,10 +433,10 @@ impl WaveHub {
         self.manifest
             .apps
             .iter()
-            .filter(|a| !matches!(install::plan(a, self.settings.prefer_installer), Plan::Unavailable(_)))
+            .filter(|a| !matches!(plan_for(a, self.settings.prefer_installer, s.installed.apps.get(&a.id)), Plan::Unavailable(_)))
             .filter(|a| !s.jobs.contains_key(&a.id))
             .filter(|a| match (s.installed.apps.get(&a.id), s.latest.get(&a.id)) {
-                (Some(rec), Some(Latest::Found(tag))) => github::is_newer(tag, &rec.version),
+                (Some(rec), Some(Latest::Found(tag))) => hub_can_update(rec) && github::is_newer(tag, &rec.version),
                 _ => false,
             })
             .map(|a| a.id.clone())
@@ -414,7 +488,8 @@ impl WaveHub {
                     ui.label(RichText::new("Every Wave app is free. Say hi, ask questions and share ideas in Discussions.").color(p().muted));
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let b = egui::Button::new(RichText::new("Join the community").family(bold()).color(Color32::WHITE)).fill(HUB_PINK).stroke(Stroke::NONE).corner_radius(18.0).min_size(vec2(0.0, 36.0));
+                    let b =
+                        egui::Button::new(RichText::new("Join the community").family(bold()).color(Color32::WHITE)).fill(HUB_PINK).stroke(Stroke::NONE).corner_radius(18.0).min_size(vec2(0.0, 36.0));
                     if ui.add(b).clicked() {
                         self.tab = Tab::Community;
                     }
@@ -427,7 +502,7 @@ impl WaveHub {
     fn card(&mut self, ui: &mut Ui, spec: &AppSpec, width: f32, row_min: f32) -> f32 {
         let ctx = ui.ctx().clone();
         let accent = Color32::from_rgb(spec.accent[0], spec.accent[1], spec.accent[2]);
-        let plan = install::plan(spec, self.settings.prefer_installer);
+        let plan = plan_for(spec, self.settings.prefer_installer, lock(&self.shared).installed.apps.get(&spec.id));
         let (latest, record, job, error, finished, note) = {
             let mut s = lock(&self.shared);
             // Celebrations and notes fade after a few seconds.
@@ -471,7 +546,9 @@ impl WaveHub {
                 _ => None,
             };
             let latest_v = latest_tag.as_deref().map(|t| t.trim_start_matches('v').to_string());
-            let update = matches!((&installed_v, &latest_v), (Some(i), Some(l)) if github::is_newer(l, i));
+            // The program file has gone (Windows Security quarantine, a half-deleted folder).
+            let missing = record.as_ref().is_some_and(|r| !r.path.is_file());
+            let update = !missing && record.as_ref().is_some_and(hub_can_update) && matches!((&installed_v, &latest_v), (Some(i), Some(l)) if github::is_newer(l, i));
             let (chip, chip_color) = if let Some((phase, _, _)) = &job {
                 (
                     match phase {
@@ -481,11 +558,21 @@ impl WaveHub {
                         Phase::Verifying => "CHECKING DOWNLOAD…",
                         Phase::Installing => "INSTALLING…",
                         Phase::RunningInstaller => "INSTALLING…",
+                        Phase::Removing => "REMOVING…",
                     },
                     p().info,
                 )
             } else if finished.is_some() {
-                (if finished.as_ref().is_some_and(|(_, m)| m.starts_with("Updated")) { "UPDATED!" } else { "INSTALLED!" }, p().good)
+                (
+                    match finished.as_ref().map(|(_, m)| m.as_str()) {
+                        Some(m) if m.starts_with("Updated") => "UPDATED!",
+                        Some(m) if m.starts_with("Removed") => "REMOVED",
+                        _ => "INSTALLED!",
+                    },
+                    p().good,
+                )
+            } else if missing {
+                ("FILES MISSING", p().bad)
             } else if error.as_ref().is_some_and(|e| e.retry) {
                 ("SOMETHING WENT WRONG", p().bad)
             } else if let Plan::Unavailable(_) = &plan {
@@ -510,7 +597,7 @@ impl WaveHub {
                 Latest::NoReleases => "none yet".into(),
                 Latest::Error(_) => "couldn't check".into(),
             };
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("Installed").color(p().muted));
                 ui.label(RichText::new(installed_v.clone().unwrap_or_else(|| "—".into())).color(p().text).family(bold()));
                 ui.label(RichText::new("   Latest").color(p().muted));
@@ -542,6 +629,14 @@ impl WaveHub {
                     Phase::Verifying => (0.91, "Checking it's genuine…".to_string(), String::new()),
                     Phase::Installing => (0.96, "Installing…".to_string(), String::new()),
                     Phase::RunningInstaller => (0.96, "Installing… (this can take a minute)".to_string(), String::new()),
+                    Phase::Removing => {
+                        let how = match record.as_ref().map(|r| r.kind) {
+                            Some(Kind::Installer) => format!("Running {}'s uninstaller…", spec.name),
+                            Some(Kind::SystemPackage) => "Waiting for the package manager…".to_string(),
+                            _ => format!("Removing {}…", spec.name),
+                        };
+                        (0.6, how, "Your settings stay.".to_string())
+                    }
                 };
                 let shown = self.shown_progress.entry(spec.id.clone()).or_insert(0.0);
                 let dt = ui.input(|i| i.stable_dt).min(0.1);
@@ -564,7 +659,27 @@ impl WaveHub {
                     ui.label(RichText::new(detail).color(p().muted).size(12.0));
                 }
                 ui.add_space(2.0);
-                stage_dots(ui, phase, accent);
+                if !matches!(phase, Phase::Removing) {
+                    stage_dots(ui, phase, accent);
+                }
+            } else if let Some(r) = record.as_ref().filter(|_| missing) {
+                let name = r.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let why = if cfg!(windows) {
+                    format!("{name} isn't there any more. Windows Security may have removed it: open Windows Security > Virus & threat protection > Protection history, find {name}, and choose Actions > Restore. Or click Repair to download a fresh copy.")
+                } else {
+                    format!("{name} isn't there any more. Click Repair to download a fresh copy.")
+                };
+                ui.add(egui::Label::new(RichText::new(why).color(p().muted).size(12.5)).wrap());
+                ui.add_space(4.0);
+                let can = hub_can_update(r) && !matches!(plan, Plan::Unavailable(_));
+                if can {
+                    let v = if r.version.is_empty() { String::new() } else { format!(" {}", r.version) };
+                    if main_button(ui, &format!("REPAIR{v}"), accent, full, true).clicked() {
+                        self.start_reinstall(&ctx, &spec.id);
+                    }
+                } else if main_button(ui, "UNINSTALL", p().soft, full, true).clicked() {
+                    self.confirm_uninstall = Some(spec.id.clone());
+                }
             } else if let Plan::Unavailable(why) = &plan {
                 ui.add(egui::Label::new(RichText::new(why).color(p().muted)).wrap());
                 if let Some(r) = &record {
@@ -649,9 +764,10 @@ impl WaveHub {
                 link(ui, "GitHub", &format!("https://github.com/{}", spec.repo));
                 link(ui, "Release notes", &format!("https://github.com/{}/releases/latest", spec.repo));
                 link(ui, "Discussions", &format!("https://github.com/{}/discussions", spec.repo));
-                if let Some(r) = record.clone() {
+                if let Some(r) = record.clone().filter(|_| job.is_none()) {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.menu_button(RichText::new("•••").color(p().muted), |ui| {
+                            ui.set_min_width(220.0);
                             if update && ui.button(format!("Open {} (current version)", r.version)).clicked() {
                                 self.open(spec, &r.path);
                             }
@@ -660,8 +776,18 @@ impl WaveHub {
                                     install::reveal(dir);
                                 }
                             }
-                            if r.kind != Kind::Installer && ui.button(format!("Remove {}", spec.name)).clicked() {
-                                self.remove(spec);
+                            if hub_can_update(&r) && !matches!(plan, Plan::Unavailable(_)) {
+                                let v = if r.version.is_empty() { String::new() } else { format!(" {}", r.version) };
+                                if ui.button(format!("Reinstall{v}")).clicked() {
+                                    self.start_reinstall(&ctx, &spec.id);
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            let b = egui::Button::new(RichText::new(format!("Uninstall {}…", spec.name)).color(p().bad));
+                            if ui.add(b).clicked() {
+                                self.confirm_uninstall = Some(spec.id.clone());
+                                ui.close();
                             }
                         });
                     });
@@ -705,18 +831,94 @@ impl WaveHub {
         }
     }
 
-    fn remove(&self, spec: &AppSpec) {
-        let mut s = lock(&self.shared);
-        let Some(record) = s.installed.apps.get(&spec.id).cloned() else { return };
-        match install::remove(spec, &record, &self.paths) {
-            Ok(()) => {
-                s.installed.apps.remove(&spec.id);
-                let _ = s.installed.save(&self.paths);
-                s.errors.remove(&spec.id);
+    /// Uninstalls the app in the background; the card shows progress, then "Removed".
+    fn start_uninstall(&self, ctx: &egui::Context, spec: &AppSpec) {
+        let record = {
+            let mut s = lock(&self.shared);
+            let Some(record) = s.installed.apps.get(&spec.id).cloned() else {
+                return;
+            };
+            if s.jobs.contains_key(&spec.id) {
+                return;
             }
-            Err(e) => {
-                s.errors.insert(spec.id.clone(), Failure { message: e, retry: false });
+            if install::is_running(&record.path) {
+                s.errors.insert(spec.id.clone(), Failure { message: format!("{} is open. Close it first, then try again.", spec.name), retry: false });
+                return;
             }
+            s.errors.remove(&spec.id);
+            s.finished.remove(&spec.id);
+            s.notes.remove(&spec.id);
+            s.jobs.insert(spec.id.clone(), Job { phase: Phase::Removing, cancel: Arc::new(AtomicBool::new(false)), speed: 0.0, update: false, repair: false });
+            record
+        };
+        let (shared, paths, spec, ctx) = (self.shared.clone(), self.paths.clone(), spec.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let result = crate::uninstall::uninstall(&spec, &record, &paths);
+            let mut s = lock(&shared);
+            s.jobs.remove(&spec.id);
+            match result {
+                Ok(()) => {
+                    s.installed.apps.remove(&spec.id);
+                    let _ = s.installed.save(&paths);
+                    s.finished.insert(spec.id.clone(), (Instant::now(), format!("Removed {}. Your settings stay.", spec.name)));
+                }
+                Err(e) => {
+                    s.errors.insert(spec.id.clone(), Failure { message: e, retry: false });
+                }
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// The "Remove StreamWave?" box.
+    fn uninstall_dialog(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.confirm_uninstall.clone() else {
+            return;
+        };
+        let Some(spec) = self.manifest.apps.iter().find(|a| a.id == id).cloned() else {
+            self.confirm_uninstall = None;
+            return;
+        };
+        let Some(record) = lock(&self.shared).installed.apps.get(&id).cloned() else {
+            self.confirm_uninstall = None;
+            return;
+        };
+        let accent = p().bad;
+        let mut close = false;
+        let mut go = false;
+        let modal = egui::Modal::new(egui::Id::unique("uninstall-confirm"))
+            .frame(egui::Frame::new().fill(p().panel).corner_radius(18).inner_margin(Margin::same(24)).stroke(Stroke::new(1.0, p().line)))
+            .show(ctx, |ui| {
+                ui.set_width(380.0);
+                ui.horizontal(|ui| {
+                    if let Some(bytes) = icon_bytes(&spec.icon) {
+                        ui.add(egui::Image::from_bytes(format!("bytes://{}.png", spec.icon), bytes).fit_to_exact_size(vec2(44.0, 44.0)));
+                    }
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(format!("Remove {}?", spec.name)).font(FontId::proportional(20.0)).family(bold()).color(p().text));
+                        ui.label(RichText::new("Your settings stay.").color(p().muted));
+                    });
+                });
+                ui.add_space(10.0);
+                let version = if record.version.is_empty() { String::new() } else { format!(" {}", record.version) };
+                let found = if record.external { ", found on this computer" } else { "" };
+                ui.label(RichText::new(format!("{}{} ({}{found})", spec.name, version, record.kind.label())).color(p().text));
+                ui.add(egui::Label::new(RichText::new(crate::uninstall::what_happens(&spec, &record)).color(p().muted)).wrap());
+                ui.add_space(16.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let b = egui::Button::new(RichText::new("Uninstall").family(bold()).color(Color32::WHITE)).fill(accent).stroke(Stroke::NONE).corner_radius(16.0).min_size(vec2(112.0, 34.0));
+                        go = ui.add(b).clicked();
+                        let c = egui::Button::new(RichText::new("Cancel").color(p().text)).fill(p().soft).stroke(Stroke::NONE).corner_radius(16.0).min_size(vec2(90.0, 34.0));
+                        close = ui.add(c).clicked();
+                    });
+                });
+            });
+        if go {
+            self.confirm_uninstall = None;
+            self.start_uninstall(ctx, &spec);
+        } else if close || modal.should_close() {
+            self.confirm_uninstall = None;
         }
     }
 
@@ -835,7 +1037,10 @@ impl WaveHub {
                     self.settings.prefer_installer = v;
                     let _ = self.settings.save(&self.paths);
                 }
-                ui.add(egui::Label::new(RichText::new("The portable version needs no admin rights. StreamWave always uses its own installer, run quietly in the background.").color(p().muted).small()).wrap());
+                ui.add(
+                    egui::Label::new(RichText::new("The portable version needs no admin rights. StreamWave always uses its own installer, run quietly in the background.").color(p().muted).small())
+                        .wrap(),
+                );
             } else {
                 ui.add(egui::Label::new(RichText::new("Apps are installed as AppImages in your home folder. No password needed.").color(p().muted)).wrap());
             }
@@ -855,7 +1060,11 @@ impl WaveHub {
             _ if s.checking => "Checking GitHub…".to_string(),
             Some(t) => {
                 let mins = t.elapsed().as_secs() / 60;
-                if mins == 0 { "Checked just now".into() } else { format!("Checked {mins} min ago") }
+                if mins == 0 {
+                    "Checked just now".into()
+                } else {
+                    format!("Checked {mins} min ago")
+                }
             }
             None => "Not checked yet".into(),
         };
@@ -870,13 +1079,15 @@ impl WaveHub {
 
 /// Runs one install on the current (background) thread and records the outcome.
 fn run_one(shared: &Arc<Mutex<Shared>>, paths: &Paths, spec: &AppSpec, tag: &str, prefer_installer: bool, cancel: &AtomicBool, ctx: &egui::Context) {
-    let plan = install::plan(spec, prefer_installer);
     let previous = lock(shared).installed.apps.get(&spec.id).cloned();
+    let plan = plan_for(spec, prefer_installer, previous.as_ref());
     // Download speed: sampled every half second, smoothed so the ETA doesn't jump about.
     let mut sample: Option<(Instant, u64)> = None;
     let result = install::install(spec, tag, &plan, paths, previous.as_ref(), cancel, &mut |phase| {
         let mut s = lock(shared);
-        let Some(job) = s.jobs.get_mut(&spec.id) else { return };
+        let Some(job) = s.jobs.get_mut(&spec.id) else {
+            return;
+        };
         if let Phase::Downloading { done, .. } = phase {
             match sample {
                 None => sample = Some((Instant::now(), done)),
@@ -892,10 +1103,18 @@ fn run_one(shared: &Arc<Mutex<Shared>>, paths: &Paths, spec: &AppSpec, tag: &str
         // The window repaints itself every frame while a job runs, so no need to ask here.
     });
     let mut s = lock(shared);
-    let was_update = s.jobs.remove(&spec.id).is_some_and(|j| j.update);
+    let job = s.jobs.remove(&spec.id);
+    let was_update = job.as_ref().is_some_and(|j| j.update);
+    let was_repair = job.as_ref().is_some_and(|j| j.repair);
     match result {
         Ok(record) => {
-            let message = if was_update { format!("Updated to {}!", record.version) } else { "Installed! Ready when you are.".to_string() };
+            let message = if was_repair {
+                format!("Repaired! {} {} is ready.", spec.name, record.version)
+            } else if was_update {
+                format!("Updated to {}!", record.version)
+            } else {
+                "Installed! Ready when you are.".to_string()
+            };
             s.finished.insert(spec.id.clone(), (Instant::now(), message));
             s.installed.apps.insert(spec.id.clone(), record);
             if let Err(e) = s.installed.save(paths) {
@@ -903,7 +1122,19 @@ fn run_one(shared: &Arc<Mutex<Shared>>, paths: &Paths, spec: &AppSpec, tag: &str
             }
         }
         Err(e) if e == "Cancelled." => {
-            s.notes.insert(spec.id.clone(), (Instant::now(), if was_update { "Update cancelled.".into() } else { "Download cancelled.".into() }));
+            s.notes.insert(
+                spec.id.clone(),
+                (
+                    Instant::now(),
+                    if was_repair {
+                        "Repair cancelled.".into()
+                    } else if was_update {
+                        "Update cancelled.".into()
+                    } else {
+                        "Download cancelled.".into()
+                    },
+                ),
+            );
         }
         Err(e) => {
             s.errors.insert(spec.id.clone(), Failure { message: e, retry: true });
@@ -923,6 +1154,8 @@ impl eframe::App for WaveHub {
                 Tab::About => self.about_page(ui),
             });
         });
+        let ctx = ui.ctx().clone();
+        self.uninstall_dialog(&ctx);
         // Smooth animation while anything is moving; otherwise just keep "Checked n min ago" fresh.
         let busy = {
             let s = lock(&self.shared);
@@ -1008,7 +1241,11 @@ fn title_job(text: &str, size: f32) -> egui::text::LayoutJob {
         let f = t - k as f32;
         let (a, b) = (stops[k], stops[k + 1]);
         let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * f) as u8;
-        let color = if p().dark { Color32::from_rgb(mix(a.r(), b.r()).saturating_add(30), mix(a.g(), b.g()).saturating_add(30), mix(a.b(), b.b()).saturating_add(30)) } else { Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b())) };
+        let color = if p().dark {
+            Color32::from_rgb(mix(a.r(), b.r()).saturating_add(30), mix(a.g(), b.g()).saturating_add(30), mix(a.b(), b.b()).saturating_add(30))
+        } else {
+            Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
+        };
         job.append(&ch.to_string(), 0.0, egui::TextFormat { font_id: FontId::new(size, bold()), color, ..Default::default() });
     }
     job
@@ -1053,7 +1290,11 @@ fn header_decor(ui: &mut Ui) {
 }
 
 fn speed_text(bytes_per_sec: f64) -> String {
-    if bytes_per_sec >= 1_000_000.0 { format!("{:.1} MB/s", bytes_per_sec / 1_000_000.0) } else { format!("{:.0} KB/s", bytes_per_sec / 1000.0) }
+    if bytes_per_sec >= 1_000_000.0 {
+        format!("{:.1} MB/s", bytes_per_sec / 1_000_000.0)
+    } else {
+        format!("{:.0} KB/s", bytes_per_sec / 1000.0)
+    }
 }
 
 fn eta_text(secs: f64) -> String {
@@ -1089,7 +1330,7 @@ fn stage_dots(ui: &mut Ui, phase: &Phase, accent: Color32) {
     let step = match phase {
         Phase::Queued | Phase::Checking | Phase::Downloading { .. } => 0,
         Phase::Verifying => 1,
-        Phase::Installing | Phase::RunningInstaller => 2,
+        Phase::Installing | Phase::RunningInstaller | Phase::Removing => 2,
     };
     ui.horizontal(|ui| {
         for (i, label) in ["Download", "Check", "Install"].iter().enumerate() {
@@ -1183,12 +1424,17 @@ fn support_box(ui: &mut Ui, with_paypal: bool) {
         ui.add(egui::Label::new(RichText::new("All Wave apps are free. If they make your day better, a coffee keeps the updates coming. Totally optional.").color(p().muted)).wrap());
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let coffee = egui::Button::new(RichText::new("Buy Me a Coffee").family(bold()).color(INK)).fill(Color32::from_rgb(255, 221, 0)).stroke(Stroke::NONE).corner_radius(16.0).min_size(vec2(0.0, 32.0));
+            let coffee =
+                egui::Button::new(RichText::new("Buy Me a Coffee").family(bold()).color(INK)).fill(Color32::from_rgb(255, 221, 0)).stroke(Stroke::NONE).corner_radius(16.0).min_size(vec2(0.0, 32.0));
             if ui.add(coffee).clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(BUY_ME_A_COFFEE));
             }
             if with_paypal {
-                let paypal = egui::Button::new(RichText::new("PayPal").family(bold()).color(Color32::WHITE)).fill(Color32::from_rgb(0, 112, 186)).stroke(Stroke::NONE).corner_radius(16.0).min_size(vec2(0.0, 32.0));
+                let paypal = egui::Button::new(RichText::new("PayPal").family(bold()).color(Color32::WHITE))
+                    .fill(Color32::from_rgb(0, 112, 186))
+                    .stroke(Stroke::NONE)
+                    .corner_radius(16.0)
+                    .min_size(vec2(0.0, 32.0));
                 if ui.add(paypal).clicked() {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(PAYPAL));
                 }
