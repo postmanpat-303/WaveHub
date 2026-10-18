@@ -69,12 +69,17 @@ version comes out, click **Update**. That's it. No account, no ads, no tracking.
 
 ## Download and install
 
-Get the newest version from the **[releases page](https://github.com/postmanpat-303/WaveHub/releases/latest)**.
+Quick downloads (always the newest version):
+**[Windows setup](https://github.com/postmanpat-303/WaveHub/releases/latest/download/WaveHub-setup-x64.exe)** ·
+**[Linux AppImage](https://github.com/postmanpat-303/WaveHub/releases/latest/download/WaveHub-linux-x86_64.AppImage)** ([ARM64](https://github.com/postmanpat-303/WaveHub/releases/latest/download/WaveHub-linux-aarch64.AppImage)) ·
+**[Mac dmg](https://github.com/postmanpat-303/WaveHub/releases/latest/download/WaveHub-macos-universal.dmg)**
+
+Every other file is on the **[latest release page](https://github.com/postmanpat-303/WaveHub/releases/latest)**.
 Pick the file for your computer:
 
 | Your computer | Download | Then |
 | --- | --- | --- |
-| **Windows** (10 and 11, 64-bit) | `WaveHub-<version>-setup-x64.exe` | Run it. It installs just for you (no admin password) and adds Wave Hub to the Start menu. |
+| **Windows** (10 and later, 64-bit) | `WaveHub-<version>-setup-x64.exe` | Run it. It installs just for you (no admin password) and adds Wave Hub to the Start menu. |
 | Windows, no install | `WaveHub-<version>-windows-x64.zip` | Unzip it anywhere and double-click `WaveHub.exe`. |
 | **Ubuntu, Debian, Mint, Pop!_OS** | `WaveHub-<version>-linux-x86_64.deb` | Double-click it, or `sudo apt install ./WaveHub-*.deb` |
 | **Fedora, openSUSE** | `WaveHub-<version>-linux-x86_64.rpm` | `sudo dnf install ./WaveHub-*.rpm` |
@@ -82,7 +87,7 @@ Pick the file for your computer:
 | Any Linux | `WaveHub-<version>-linux-x86_64.AppImage` | `chmod +x WaveHub-*.AppImage`, then run it. |
 | Any Linux, no package | `WaveHub-<version>-linux-x86_64.tar.gz` | Unpack it, then `./install.sh` (adds it to your menu; `./install.sh --uninstall` removes it). |
 | Raspberry Pi and other 64-bit ARM Linux | the same files with `aarch64` instead of `x86_64` | As above. |
-| macOS (Apple Silicon and Intel) | `WaveHub-<version>-macos-universal.dmg` | Open it and drag Wave Hub into Applications. On a Mac, Wave Hub can install BigWave Radio. |
+| macOS (Apple Silicon and Intel) | `WaveHub-<version>-macos-universal.dmg` | Open it and drag Wave Hub into Applications. On a Mac, Wave Hub can install BigWave Radio and ChipWave Tracker. |
 
 The Linux files work on any distribution from 2020 on (glibc 2.31 or newer).
 
