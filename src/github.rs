@@ -89,8 +89,13 @@ pub fn download(url: &str, dest: &Path, cancel: &AtomicBool, progress: &mut dyn 
     let mut file = std::fs::File::create(dest).map_err(|e| format!("couldn't create {} ({e})", dest.display()))?;
     let mut reader = resp.body_mut().with_config().limit(4 * 1024 * 1024 * 1024).reader();
     let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 256 * 1024];
+    let mut buf = vec![0u8; 64 * 1024];
     let mut done = 0u64;
+    // Development builds only: WAVEHUB_SLOW_KBPS=2000 caps the speed, to watch the progress UI.
+    #[cfg(debug_assertions)]
+    let slow: Option<f64> = std::env::var("WAVEHUB_SLOW_KBPS").ok().and_then(|v| v.parse().ok());
+    #[cfg(debug_assertions)]
+    let started = std::time::Instant::now();
     loop {
         if cancel.load(Ordering::Relaxed) {
             drop(file);
@@ -104,6 +109,14 @@ pub fn download(url: &str, dest: &Path, cancel: &AtomicBool, progress: &mut dyn 
         hasher.update(&buf[..n]);
         file.write_all(&buf[..n]).map_err(|e| format!("couldn't write the download ({e})"))?;
         done += n as u64;
+        #[cfg(debug_assertions)]
+        if let Some(kbps) = slow {
+            let due = done as f64 / (kbps * 1000.0);
+            let ahead = due - started.elapsed().as_secs_f64();
+            if ahead > 0.0 {
+                std::thread::sleep(Duration::from_secs_f64(ahead));
+            }
+        }
         progress(done, total);
     }
     file.sync_all().map_err(|e| e.to_string())?;

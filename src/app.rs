@@ -123,13 +123,29 @@ enum Latest {
 struct Job {
     phase: Phase,
     cancel: Arc<AtomicBool>,
+    /// Bytes per second, smoothed.
+    speed: f64,
+    /// Whether this replaces an installed version (for the wording at the end).
+    update: bool,
+}
+
+/// Something that went wrong, shown on the card until it's retried or dismissed.
+#[derive(Clone)]
+struct Failure {
+    message: String,
+    /// Offer "Retry" (an install or update that failed), not just "Dismiss".
+    retry: bool,
 }
 
 #[derive(Default)]
 struct Shared {
     latest: HashMap<String, Latest>,
     jobs: HashMap<String, Job>,
-    errors: HashMap<String, String>,
+    errors: HashMap<String, Failure>,
+    /// Just finished: when, and the message to celebrate with.
+    finished: HashMap<String, (Instant, String)>,
+    /// A short note, such as "Download cancelled.", that fades after a few seconds.
+    notes: HashMap<String, (Instant, String)>,
     installed: Installed,
     checked_at: Option<Instant>,
     checking: bool,
@@ -151,6 +167,8 @@ pub struct WaveHub {
     tab: Tab,
     /// Height of the tallest card in each row last frame, so a row's cards line up.
     row_heights: Vec<f32>,
+    /// The progress each card's bar shows, easing towards the real value.
+    shown_progress: HashMap<String, f32>,
 }
 
 fn lock(s: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
@@ -178,7 +196,7 @@ impl WaveHub {
             Ok("about") => Tab::About,
             _ => Tab::Apps,
         };
-        let hub = Self { manifest, paths, settings, shared, tab, row_heights: Vec::new() };
+        let hub = Self { manifest, paths, settings, shared, tab, row_heights: Vec::new(), shown_progress: HashMap::new() };
         hub.check_now(&cc.egui_ctx);
         hub
     }
@@ -251,8 +269,12 @@ impl WaveHub {
                     continue;
                 }
                 let cancel = Arc::new(AtomicBool::new(false));
-                s.jobs.insert(id.clone(), Job { phase: Phase::Checking, cancel: cancel.clone() });
+                let update = s.installed.apps.contains_key(&id);
+                let phase = if queued.is_empty() { Phase::Checking } else { Phase::Queued };
+                s.jobs.insert(id.clone(), Job { phase, cancel: cancel.clone(), speed: 0.0, update });
                 s.errors.remove(&id);
+                s.notes.remove(&id);
+                s.finished.remove(&id);
                 queued.push((spec.clone(), tag, cancel));
             }
         }
@@ -265,6 +287,12 @@ impl WaveHub {
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             for (spec, tag, cancel) in queued {
+                if cancel.load(Ordering::Relaxed) {
+                    let mut s = lock(&shared);
+                    s.jobs.remove(&spec.id);
+                    s.notes.insert(spec.id.clone(), (Instant::now(), "Cancelled.".into()));
+                    continue;
+                }
                 run_one(&shared, &paths, &spec, &tag, prefer_installer, &cancel, &ctx);
             }
         });
@@ -346,11 +374,11 @@ impl WaveHub {
                 let min = top_left + vec2(i as f32 * (card_w + gap), 0.0);
                 let rect = egui::Rect::from_min_size(min, vec2(card_w, 2000.0));
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)));
-                self.card(&mut child, spec, card_w, row_min);
-                tallest = tallest.max(child.min_rect().height());
+                let natural = self.card(&mut child, spec, card_w, row_min);
+                tallest = tallest.max(natural);
             }
             heights.push(tallest);
-            ui.allocate_space(vec2(width, tallest));
+            ui.allocate_space(vec2(width, tallest.max(row_min)));
             ui.add_space(gap);
         }
         if heights != self.row_heights {
@@ -384,25 +412,33 @@ impl WaveHub {
         });
     }
 
-    fn card(&mut self, ui: &mut Ui, spec: &AppSpec, width: f32, row_min: f32) {
+    /// Draws one app card; returns its height without any padding.
+    fn card(&mut self, ui: &mut Ui, spec: &AppSpec, width: f32, row_min: f32) -> f32 {
         let ctx = ui.ctx().clone();
         let accent = Color32::from_rgb(spec.accent[0], spec.accent[1], spec.accent[2]);
         let plan = install::plan(spec, self.settings.prefer_installer);
-        let (latest, record, job, error) = {
-            let s = lock(&self.shared);
+        let (latest, record, job, error, finished, note) = {
+            let mut s = lock(&self.shared);
+            // Celebrations and notes fade after a few seconds.
+            s.finished.retain(|_, (t, _)| t.elapsed().as_secs_f32() < 6.0);
+            s.notes.retain(|_, (t, _)| t.elapsed().as_secs_f32() < 4.0);
             (
                 s.latest.get(&spec.id).cloned().unwrap_or(Latest::Checking),
                 s.installed.apps.get(&spec.id).cloned(),
-                s.jobs.get(&spec.id).map(|j| (j.phase.clone(), j.cancel.clone())),
+                s.jobs.get(&spec.id).map(|j| (j.phase.clone(), j.cancel.clone(), j.speed)),
                 s.errors.get(&spec.id).cloned(),
+                s.finished.get(&spec.id).cloned(),
+                s.notes.get(&spec.id).map(|(_, n)| n.clone()),
             )
         };
+        if job.is_none() {
+            self.shown_progress.remove(&spec.id);
+        }
         let light = !p().dark;
         let radius: u8 = if light { 20 } else { 14 };
         let margin: i8 = if light { 20 } else { 16 };
         let response = card_frame(radius, margin).show(ui, |ui| {
             ui.set_width(width - 2.0 * margin as f32 - 2.0);
-            ui.set_min_height((row_min - 2.0 * margin as f32 - 2.0).max(if light { 284.0 } else { 268.0 }));
             if light {
                 ui.add_space(6.0);
             }
@@ -425,17 +461,22 @@ impl WaveHub {
             };
             let latest_v = latest_tag.as_deref().map(|t| t.trim_start_matches('v').to_string());
             let update = matches!((&installed_v, &latest_v), (Some(i), Some(l)) if github::is_newer(l, i));
-            let (chip, chip_color) = if let Some((phase, _)) = &job {
+            let (chip, chip_color) = if let Some((phase, _, _)) = &job {
                 (
                     match phase {
+                        Phase::Queued => "WAITING…",
                         Phase::Checking => "PREPARING…",
                         Phase::Downloading { .. } => "DOWNLOADING…",
                         Phase::Verifying => "CHECKING DOWNLOAD…",
                         Phase::Installing => "INSTALLING…",
-                        Phase::RunningInstaller => "INSTALLER OPEN…",
+                        Phase::RunningInstaller => "INSTALLING…",
                     },
                     p().info,
                 )
+            } else if finished.is_some() {
+                (if finished.as_ref().is_some_and(|(_, m)| m.starts_with("Updated")) { "UPDATED!" } else { "INSTALLED!" }, p().good)
+            } else if error.as_ref().is_some_and(|e| e.retry) {
+                ("SOMETHING WENT WRONG", p().bad)
             } else if let Plan::Unavailable(_) = &plan {
                 if installed_v.is_some() { ("INSTALLED", p().good) } else { (if cfg!(windows) { "NOT AVAILABLE YET" } else { "WINDOWS ONLY FOR NOW" }, p().muted) }
             } else if update {
@@ -471,26 +512,48 @@ impl WaveHub {
 
             // The one main button, or progress.
             let full = vec2(ui.available_width(), 38.0);
-            if let Some((phase, cancel)) = &job {
-                let (frac, text) = match phase {
+            if let Some((phase, cancel, speed)) = &job {
+                // One bar for the whole job: download fills most of it, checking and
+                // installing the rest.
+                let (target, stage, detail) = match phase {
+                    Phase::Queued => (0.0, "Waiting for the app before it…".to_string(), String::new()),
+                    Phase::Checking => (0.02, "Starting download…".to_string(), String::new()),
                     Phase::Downloading { done, total } if *total > 0 => {
-                        (*done as f32 / *total as f32, format!("Downloading {} of {} · {:.0}%", mb(*done), mb(*total), *done as f32 * 100.0 / *total as f32))
+                        let f = *done as f32 / *total as f32;
+                        let mut detail = format!("{} of {}", mb(*done), mb(*total));
+                        if *speed > 0.0 {
+                            let left = (*total - *done) as f64 / speed;
+                            detail = format!("{detail} · {} · {}", speed_text(*speed), eta_text(left));
+                        }
+                        (0.02 + 0.86 * f, format!("Downloading · {:.0}%", f * 100.0), detail)
                     }
-                    Phase::Downloading { done, .. } => (0.0, format!("Downloading {}", mb(*done))),
-                    Phase::Checking => (0.0, "Getting ready…".into()),
-                    Phase::Verifying => (1.0, "Checking the download is genuine…".into()),
-                    Phase::Installing => (1.0, "Installing…".into()),
-                    Phase::RunningInstaller => (1.0, "Finish the setup in the installer window".into()),
+                    Phase::Downloading { done, .. } => (0.3, format!("Downloading {}", mb(*done)), speed_text(*speed)),
+                    Phase::Verifying => (0.91, "Checking it's genuine…".to_string(), String::new()),
+                    Phase::Installing => (0.96, "Installing…".to_string(), String::new()),
+                    Phase::RunningInstaller => (0.96, "Installing… (this can take a minute)".to_string(), String::new()),
                 };
-                ui.label(RichText::new(text).color(p().text));
+                let shown = self.shown_progress.entry(spec.id.clone()).or_insert(0.0);
+                let dt = ui.input(|i| i.stable_dt).min(0.1);
+                *shown += (target - *shown) * (1.0 - (-dt * 6.0).exp());
+                let shown = *shown;
+                ui.label(RichText::new(stage).color(p().text).family(bold()).size(13.5));
+                ui.add_space(2.0);
                 ui.horizontal(|ui| {
-                    let bar_w = ui.available_width() - 80.0;
-                    ui.add(egui::ProgressBar::new(frac).fill(accent).desired_width(bar_w).desired_height(12.0).corner_radius(6.0));
-                    let can_cancel = matches!(phase, Phase::Downloading { .. } | Phase::Checking);
-                    if ui.add_enabled(can_cancel, egui::Button::new("Cancel").corner_radius(14.0)).clicked() {
-                        cancel.store(true, Ordering::Relaxed);
+                    let cancellable = matches!(phase, Phase::Queued | Phase::Checking | Phase::Downloading { .. });
+                    let bar_w = ui.available_width() - if cancellable { 86.0 } else { 0.0 };
+                    progress_bar(ui, shown, accent, bar_w, ui.input(|i| i.time));
+                    if cancellable {
+                        let b = egui::Button::new(RichText::new("Cancel").color(p().text)).fill(p().soft).stroke(Stroke::NONE).corner_radius(15.0).min_size(vec2(78.0, 30.0));
+                        if ui.add(b).clicked() {
+                            cancel.store(true, Ordering::Relaxed);
+                        }
                     }
                 });
+                if !detail.is_empty() {
+                    ui.label(RichText::new(detail).color(p().muted).size(12.0));
+                }
+                ui.add_space(2.0);
+                stage_dots(ui, phase, accent);
             } else if let Plan::Unavailable(why) = &plan {
                 ui.add(egui::Label::new(RichText::new(why).color(p().muted)).wrap());
                 if let Some(r) = &record {
@@ -502,22 +565,65 @@ impl WaveHub {
                 }
             } else if update {
                 let label = format!("UPDATE TO {}", latest_v.clone().unwrap_or_default());
+                let label = if error.as_ref().is_some_and(|e| e.retry) { format!("RETRY UPDATE TO {}", latest_v.clone().unwrap_or_default()) } else { label };
                 if main_button(ui, &label, accent, full, true).clicked() {
                     self.start_installs(&ctx, vec![spec.id.clone()]);
                 }
             } else if let Some(r) = &record {
+                if finished.is_some() {
+                    // A gentle pulse so the eye finds the new Open button.
+                    let t = ui.input(|i| i.time) as f32;
+                    let grow = 2.0 + 2.0 * (t * 4.0).sin().abs();
+                    let (rect, _) = (ui.cursor().min, ());
+                    let glow = egui::Rect::from_min_size(rect, full).expand(grow);
+                    ui.painter().rect_filled(glow, CornerRadius::same((full.y / 2.0 + grow) as u8), Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 60));
+                }
                 if main_button(ui, "OPEN", accent, full, true).clicked() {
                     self.open(spec, &r.path);
                 }
             } else {
                 let ready = latest_tag.is_some();
-                if main_button(ui, "INSTALL", accent, full, ready).clicked() {
+                let label = if error.as_ref().is_some_and(|e| e.retry) { "RETRY INSTALL" } else { "INSTALL" };
+                if main_button(ui, label, accent, full, ready).clicked() {
                     self.start_installs(&ctx, vec![spec.id.clone()]);
                 }
             }
+            if let Some((when, message)) = &finished {
+                // Fade in quickly, hold, then fade out.
+                let t = when.elapsed().as_secs_f32();
+                let alpha = (t * 4.0).min(1.0) * ((6.0 - t) / 1.0).clamp(0.0, 1.0);
+                ui.add_space(6.0);
+                let fill = tint(p().good, 0.12 * alpha);
+                egui::Frame::new().fill(fill).corner_radius(12).inner_margin(Margin::symmetric(12, 6)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(message).family(bold()).color(p().good.gamma_multiply(alpha.max(0.05))));
+                });
+            }
+            if let Some(note) = &note {
+                ui.add_space(4.0);
+                ui.label(RichText::new(note).color(p().muted));
+            }
             if let Some(e) = &error {
                 ui.add_space(6.0);
-                ui.add(egui::Label::new(RichText::new(e).color(p().bad)).wrap());
+                let mut retry = false;
+                let mut dismiss = false;
+                egui::Frame::new().fill(tint(p().bad, 0.10)).corner_radius(12).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(egui::Label::new(RichText::new(&e.message).color(p().bad)).wrap());
+                    ui.horizontal(|ui| {
+                        if e.retry {
+                            let b = egui::Button::new(RichText::new("Retry").family(bold()).color(Color32::WHITE)).fill(p().bad).stroke(Stroke::NONE).corner_radius(14.0).min_size(vec2(72.0, 28.0));
+                            retry = ui.add(b).clicked();
+                        }
+                        let d = egui::Button::new(RichText::new("Dismiss").color(p().text)).fill(Color32::TRANSPARENT).stroke(Stroke::NONE).corner_radius(14.0).min_size(vec2(0.0, 28.0));
+                        dismiss = ui.add(d).clicked();
+                    });
+                });
+                if retry {
+                    self.start_installs(&ctx, vec![spec.id.clone()]);
+                } else if dismiss {
+                    lock(&self.shared).errors.remove(&spec.id);
+                }
             }
             if let Latest::Error(e) = &latest {
                 ui.add(egui::Label::new(RichText::new(e).color(p().muted).small()).wrap());
@@ -545,7 +651,17 @@ impl WaveHub {
                     });
                 }
             });
+            // Pad to the row's tallest card so a row lines up; report our own natural height.
+            let natural = ui.min_rect().height();
+            let target = (row_min - 2.0 * margin as f32 - 2.0).max(if light { 284.0 } else { 268.0 });
+            // (set_min_height counts from the cursor, so pad by hand.)
+            let pad = target - natural - ui.spacing().item_spacing.y;
+            if pad > 0.0 {
+                ui.allocate_space(vec2(1.0, pad));
+            }
+            natural + 2.0 * margin as f32 + 2.0
         });
+        let natural = response.inner;
         // Accent strip along the top edge, like the coloured app tiles.
         let rect = response.response.rect;
         if light {
@@ -556,6 +672,7 @@ impl WaveHub {
             let strip = egui::Rect::from_min_size(rect.min + vec2(16.0, 0.0), vec2(56.0, 3.0));
             ui.painter().rect_filled(strip, CornerRadius::same(2), accent);
         }
+        natural
     }
 
     fn open(&self, spec: &AppSpec, path: &std::path::Path) {
@@ -566,7 +683,7 @@ impl WaveHub {
                 s.errors.remove(&spec.id);
             }
             Err(e) => {
-                s.errors.insert(spec.id.clone(), format!("Couldn't open {}: {e}", spec.name));
+                s.errors.insert(spec.id.clone(), Failure { message: format!("Couldn't open {}: {e}", spec.name), retry: false });
             }
         }
     }
@@ -581,7 +698,7 @@ impl WaveHub {
                 s.errors.remove(&spec.id);
             }
             Err(e) => {
-                s.errors.insert(spec.id.clone(), e);
+                s.errors.insert(spec.id.clone(), Failure { message: e, retry: false });
             }
         }
     }
@@ -620,16 +737,38 @@ impl WaveHub {
         let ctx = ui.ctx().clone();
         ui.horizontal(|ui| {
             if let Some(bytes) = icon_bytes("wavehub") {
-                ui.add(egui::Image::from_bytes("bytes://wavehub.png", bytes).fit_to_exact_size(vec2(96.0, 96.0)));
+                ui.add(egui::Image::from_bytes("bytes://wavehub.png", bytes).fit_to_exact_size(vec2(84.0, 84.0)));
             }
             ui.vertical(|ui| {
                 ui.label(RichText::new("Wave Hub").font(FontId::proportional(26.0)).family(bold()).color(p().text));
-                ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(p().muted));
+                ui.label(RichText::new(format!("Version {} · MIT License · © 2026 Derek Heasley", env!("CARGO_PKG_VERSION"))).color(p().muted));
                 ui.add_space(4.0);
                 ui.add(egui::Label::new(RichText::new("Wave Hub is free and always will be. No account, no ads, no tracking. It installs and updates BigWave Radio, ChipWave Tracker and StreamWave on Windows and Linux, straight from their official GitHub releases.").color(p().text)).wrap());
             });
         });
-        ui.add_space(14.0);
+        ui.add_space(12.0);
+        let (left_ui, right_ui) = {
+            let mut cols: Vec<Ui> = Vec::new();
+            let full = ui.available_rect_before_wrap();
+            let gap = 18.0;
+            let w = (full.width() - gap) / 2.0;
+            for i in 0..2 {
+                let rect = egui::Rect::from_min_size(full.min + vec2(i as f32 * (w + gap), 0.0), vec2(w, full.height().max(10.0)));
+                cols.push(ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min))));
+            }
+            let right = cols.pop().unwrap();
+            (cols.pop().unwrap(), right)
+        };
+        let (mut left_ui, mut right_ui) = (left_ui, right_ui);
+        self.about_left(&mut left_ui, &ctx);
+        support_box(&mut right_ui, true);
+        credits_box(&mut right_ui);
+        let used = left_ui.min_rect().height().max(right_ui.min_rect().height());
+        ui.allocate_space(vec2(ui.available_width(), used));
+    }
+
+    fn about_left(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        let ctx = ctx.clone();
         section(ui, "Updates", |ui| {
             let hub = lock(&self.shared).hub_latest.clone();
             let current = env!("CARGO_PKG_VERSION");
@@ -637,10 +776,10 @@ impl WaveHub {
                 None | Some(Latest::Checking) => ("Checking for a newer Wave Hub…".to_string(), p().muted),
                 Some(Latest::Found(tag)) if github::is_newer(tag, current) => (format!("Wave Hub {} is available.", tag.trim_start_matches('v')), p().warn),
                 Some(Latest::Found(_)) => ("You have the newest Wave Hub.".to_string(), p().good),
-                Some(Latest::NoReleases) => ("No Wave Hub releases have been published yet, so this is the newest.".to_string(), p().muted),
+                Some(Latest::NoReleases) => ("No newer version. You're up to date.".to_string(), p().good),
                 Some(Latest::Error(e)) => (format!("Couldn't check: {e}"), p().bad),
             };
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.add(egui::Button::new("Check for updates").corner_radius(8.0)).clicked() {
                     self.check_hub_only(&ctx);
                 }
@@ -667,15 +806,15 @@ impl WaveHub {
             ui.add_space(4.0);
             if cfg!(windows) {
                 let mut v = self.settings.prefer_installer;
-                if ui.checkbox(&mut v, "Use each app's official installer instead of the portable version").changed() {
+                if ui.checkbox(&mut v, "Use official installers instead of portable apps").changed() {
                     self.settings.prefer_installer = v;
                     let _ = self.settings.save(&self.paths);
                 }
-                ui.label(RichText::new("The portable version needs no admin rights and lives in Wave Hub's folder. StreamWave always uses its installer.").color(p().muted).small());
+                ui.add(egui::Label::new(RichText::new("The portable version needs no admin rights. StreamWave always uses its own installer, run quietly in the background.").color(p().muted).small()).wrap());
             } else {
-                ui.label(RichText::new("On Linux, apps are installed as AppImages in your home folder. No password needed.").color(p().muted));
+                ui.add(egui::Label::new(RichText::new("Apps are installed as AppImages in your home folder. No password needed.").color(p().muted)).wrap());
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("Apps folder:").color(p().muted));
                 ui.label(RichText::new(self.paths.apps().display().to_string()).monospace().color(p().text));
                 if ui.button("Open folder").clicked() {
@@ -683,9 +822,6 @@ impl WaveHub {
                 }
             });
         });
-        support_box(ui, true);
-        ui.add_space(10.0);
-        ui.label(RichText::new("MIT License · © 2026 Derek Heasley").color(p().muted).small());
     }
 
     fn footer(&self, ui: &mut Ui) {
@@ -711,29 +847,41 @@ impl WaveHub {
 fn run_one(shared: &Arc<Mutex<Shared>>, paths: &Paths, spec: &AppSpec, tag: &str, prefer_installer: bool, cancel: &AtomicBool, ctx: &egui::Context) {
     let plan = install::plan(spec, prefer_installer);
     let previous = lock(shared).installed.apps.get(&spec.id).cloned();
-    let mut last_paint = Instant::now();
+    // Download speed: sampled every half second, smoothed so the ETA doesn't jump about.
+    let mut sample: Option<(Instant, u64)> = None;
     let result = install::install(spec, tag, &plan, paths, previous.as_ref(), cancel, &mut |phase| {
-        let repaint = !matches!(phase, Phase::Downloading { .. }) || last_paint.elapsed().as_millis() > 50;
-        if let Some(job) = lock(shared).jobs.get_mut(&spec.id) {
-            job.phase = phase;
-        }
-        if repaint {
-            last_paint = Instant::now();
-            ctx.request_repaint();
-        }
-    });
-    let mut s = lock(shared);
-    s.jobs.remove(&spec.id);
-    match result {
-        Ok(record) => {
-            s.installed.apps.insert(spec.id.clone(), record);
-            if let Err(e) = s.installed.save(paths) {
-                s.errors.insert(spec.id.clone(), format!("Installed, but couldn't save the list of installed apps ({e})."));
+        let mut s = lock(shared);
+        let Some(job) = s.jobs.get_mut(&spec.id) else { return };
+        if let Phase::Downloading { done, .. } = phase {
+            match sample {
+                None => sample = Some((Instant::now(), done)),
+                Some((t, d)) if t.elapsed().as_secs_f64() >= 0.5 => {
+                    let rate = (done.saturating_sub(d)) as f64 / t.elapsed().as_secs_f64();
+                    job.speed = if job.speed == 0.0 { rate } else { job.speed * 0.6 + rate * 0.4 };
+                    sample = Some((Instant::now(), done));
+                }
+                _ => {}
             }
         }
-        Err(e) if e == "Cancelled." => {}
+        job.phase = phase;
+        // The window repaints itself every frame while a job runs, so no need to ask here.
+    });
+    let mut s = lock(shared);
+    let was_update = s.jobs.remove(&spec.id).is_some_and(|j| j.update);
+    match result {
+        Ok(record) => {
+            let message = if was_update { format!("Updated to {}!", record.version) } else { "Installed! Ready when you are.".to_string() };
+            s.finished.insert(spec.id.clone(), (Instant::now(), message));
+            s.installed.apps.insert(spec.id.clone(), record);
+            if let Err(e) = s.installed.save(paths) {
+                s.errors.insert(spec.id.clone(), Failure { message: format!("Installed, but couldn't save the list of installed apps ({e})."), retry: false });
+            }
+        }
+        Err(e) if e == "Cancelled." => {
+            s.notes.insert(spec.id.clone(), (Instant::now(), if was_update { "Update cancelled.".into() } else { "Download cancelled.".into() }));
+        }
         Err(e) => {
-            s.errors.insert(spec.id.clone(), e);
+            s.errors.insert(spec.id.clone(), Failure { message: e, retry: true });
         }
     }
     ctx.request_repaint();
@@ -750,8 +898,16 @@ impl eframe::App for WaveHub {
                 Tab::About => self.about_page(ui),
             });
         });
-        // Keep "Checked n min ago" fresh.
-        ui.ctx().request_repaint_after(std::time::Duration::from_secs(30));
+        // Smooth animation while anything is moving; otherwise just keep "Checked n min ago" fresh.
+        let busy = {
+            let s = lock(&self.shared);
+            !s.jobs.is_empty() || !s.finished.is_empty() || !s.notes.is_empty()
+        };
+        if busy {
+            ui.ctx().request_repaint();
+        } else {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs(30));
+        }
     }
 }
 
@@ -808,6 +964,8 @@ fn apply_theme(ctx: &egui::Context) {
         let light = !pal.dark;
         style.spacing.item_spacing = if light { vec2(10.0, 7.0) } else { vec2(8.0, 6.0) };
         style.spacing.button_padding = vec2(14.0, 6.0);
+        // Scroll bars float over the content, so the cards never change width when one appears.
+        style.spacing.scroll = egui::style::ScrollStyle::floating();
         style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(14.0));
         style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(14.0));
         style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(11.5));
@@ -867,6 +1025,57 @@ fn header_decor(ui: &mut Ui) {
         let alpha = (110.0 * strength) as u8;
         painter.add(egui::Shape::line(pts, Stroke::new(1.6, Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha))));
     }
+}
+
+fn speed_text(bytes_per_sec: f64) -> String {
+    if bytes_per_sec >= 1_000_000.0 { format!("{:.1} MB/s", bytes_per_sec / 1_000_000.0) } else { format!("{:.0} KB/s", bytes_per_sec / 1000.0) }
+}
+
+fn eta_text(secs: f64) -> String {
+    let s = secs.max(0.0).round() as u64;
+    match s {
+        0..=1 => "almost done".into(),
+        2..=59 => format!("{s} s left"),
+        60..=3599 => format!("{} min {} s left", s / 60, s % 60),
+        _ => format!("{} h {} min left", s / 3600, (s % 3600) / 60),
+    }
+}
+
+/// A rounded bar with a soft moving sheen, so it always looks alive.
+fn progress_bar(ui: &mut Ui, fraction: f32, color: Color32, width: f32, time: f64) {
+    let (rect, _) = ui.allocate_exact_size(vec2(width.max(40.0), 12.0), Sense::hover());
+    let painter = ui.painter_at(rect.expand(1.0));
+    let radius = CornerRadius::same(6);
+    painter.rect_filled(rect, radius, if p().dark { Color32::from_rgb(34, 42, 70) } else { Color32::from_rgb(238, 232, 222) });
+    let w = (rect.width() * fraction.clamp(0.0, 1.0)).max(12.0);
+    let fill = egui::Rect::from_min_size(rect.min, vec2(w, rect.height()));
+    painter.rect_filled(fill, radius, color);
+    // Sheen: a pale band sliding across the filled part.
+    let band = 46.0;
+    let x = fill.left() - band + ((time as f32 * 160.0) % (fill.width() + band * 2.0));
+    let sheen = egui::Rect::from_min_max(egui::pos2(x.max(fill.left()), fill.top()), egui::pos2((x + band).min(fill.right()), fill.bottom()));
+    if sheen.width() > 0.0 {
+        painter.with_clip_rect(fill).rect_filled(sheen, radius, Color32::from_white_alpha(70));
+    }
+}
+
+/// Download · Check · Install, with the current step lit.
+fn stage_dots(ui: &mut Ui, phase: &Phase, accent: Color32) {
+    let step = match phase {
+        Phase::Queued | Phase::Checking | Phase::Downloading { .. } => 0,
+        Phase::Verifying => 1,
+        Phase::Installing | Phase::RunningInstaller => 2,
+    };
+    ui.horizontal(|ui| {
+        for (i, label) in ["Download", "Check", "Install"].iter().enumerate() {
+            let (dot, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+            let c = if i <= step { accent } else { p().line };
+            ui.painter().circle_filled(dot.center(), if i == step { 4.5 } else { 3.5 }, c);
+            let color = if i == step { p().text } else { p().muted };
+            ui.label(RichText::new(*label).size(12.0).color(color));
+            ui.add_space(6.0);
+        }
+    });
 }
 
 fn mb(bytes: u64) -> String {
@@ -930,6 +1139,18 @@ fn section(ui: &mut Ui, title: &str, body: impl FnOnce(&mut Ui)) {
         body(ui);
     });
     ui.add_space(if p().dark { 10.0 } else { 16.0 });
+}
+
+fn credits_box(ui: &mut Ui) {
+    section(ui, "Thank you, storytold", |ui| {
+        ui.add(egui::Label::new(RichText::new("Wave Hub was inspired by storytold's ArtCraft Launcher and the Craft apps such as PhotoCraft. Their one-click install and update flow showed the way. Wave Hub's code and artwork are its own.").color(p().muted)).wrap());
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            link(ui, "storytold on GitHub", "https://github.com/storytold");
+            link(ui, "ArtCraft Launcher", "https://github.com/storytold/craft-launcher");
+            link(ui, "PhotoCraft", "https://github.com/storytold/photocraft");
+        });
+    });
 }
 
 fn support_box(ui: &mut Ui, with_paypal: bool) {

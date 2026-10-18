@@ -14,7 +14,9 @@
         "portable": "BigWaveRadio-{version}-windows-x64.zip",
         "exe": "BigWaveRadio.exe",
         "installer": "BigWaveRadio-{version}-setup-x64.exe",
-        "installed_exe": ["{programfiles}\\BigWave Radio\\BigWaveRadio.exe"]
+        "installed_exe": ["{programfiles}\\BigWave Radio\\BigWaveRadio.exe"],
+        "silent_args": ["/S"],
+        "uninstall_key": "BigWaveRadio"
       },
       "linux": {
         "appimage": "BigWaveRadio-{version}-linux-x86_64.AppImage"
@@ -31,7 +33,9 @@
         "portable": "ChipWave-{version}-windows-x64.zip",
         "exe": "ChipWave.exe",
         "installer": "ChipWave-{version}-setup-x64.exe",
-        "installed_exe": ["{programfiles}\\ChipWave Tracker\\ChipWave.exe"]
+        "installed_exe": ["{programfiles}\\ChipWave Tracker\\ChipWave.exe"],
+        "silent_args": ["/S"],
+        "uninstall_key": "ChipWaveTracker"
       },
       "linux": {
         "unavailable": "Windows only for now. On Linux, build it from source."
@@ -47,7 +51,9 @@
       "sums": "SHA256SUMS.txt",
       "windows": {
         "installer": "StreamWave_{version}_x64-setup.exe",
-        "installed_exe": ["{localappdata}\\StreamWave\\StreamWave.exe", "{programfiles}\\StreamWave\\StreamWave.exe"]
+        "installed_exe": ["{localappdata}\\StreamWave\\StreamWave.exe", "{programfiles}\\StreamWave\\StreamWave.exe"],
+        "silent_args": ["/S"],
+        "uninstall_key": "StreamWave"
       },
       "linux": {
         "appimage": "StreamWave_{version}_amd64.AppImage"

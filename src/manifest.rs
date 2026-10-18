@@ -54,6 +54,13 @@ pub struct WindowsSpec {
     /// filled in.
     #[serde(default)]
     pub installed_exe: Vec<String>,
+    /// Arguments that make the official installer run without questions (NSIS: `/S`).
+    #[serde(default)]
+    pub silent_args: Vec<String>,
+    /// The installer's key under `...\CurrentVersion\Uninstall`, used to find the program
+    /// if it isn't in one of the `installed_exe` places.
+    #[serde(default)]
+    pub uninstall_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

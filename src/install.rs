@@ -17,7 +17,7 @@ use crate::store::{now, Kind, Paths, Record};
 pub enum Plan {
     AppImage { file: String },
     Portable { file: String, exe: String },
-    Installer { file: String, exe_candidates: Vec<String> },
+    Installer { file: String, exe_candidates: Vec<String>, silent_args: Vec<String>, uninstall_key: Option<String> },
     Unavailable(String),
 }
 
@@ -34,7 +34,12 @@ pub fn os_label() -> &'static str {
 pub fn plan(spec: &AppSpec, prefer_installer: bool) -> Plan {
     if cfg!(windows) {
         let Some(w) = &spec.windows else { return Plan::Unavailable("No Windows download yet.".into()) };
-        let installer = w.installer.clone().map(|file| Plan::Installer { file, exe_candidates: w.installed_exe.clone() });
+        let installer = w.installer.clone().map(|file| Plan::Installer {
+            file,
+            exe_candidates: w.installed_exe.clone(),
+            silent_args: w.silent_args.clone(),
+            uninstall_key: w.uninstall_key.clone(),
+        });
         let portable = match (&w.portable, &w.exe) {
             (Some(file), Some(exe)) => Some(Plan::Portable { file: file.clone(), exe: exe.clone() }),
             _ => None,
@@ -55,11 +60,13 @@ pub fn plan(spec: &AppSpec, prefer_installer: bool) -> Plan {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Phase {
+    /// Waiting its turn behind another app (Update all).
+    Queued,
     Checking,
     Downloading { done: u64, total: u64 },
     Verifying,
     Installing,
-    /// Waiting for the official setup program to finish.
+    /// The official setup program is running (silently where it can).
     RunningInstaller,
 }
 
@@ -101,6 +108,9 @@ pub fn install(
         }
         None => None,
     };
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("Cancelled.".into());
+    }
 
     let part = paths.downloads().join(format!("{file}.part"));
     let url = github::download_url(&spec.repo, tag, &file);
@@ -126,9 +136,9 @@ pub fn install(
     let result = match plan {
         Plan::AppImage { .. } => install_appimage(spec, &part, paths).map(|p| record(Kind::AppImage, p)),
         Plan::Portable { exe, .. } => install_portable(spec, &part, exe, paths).map(|p| record(Kind::PortableZip, p)),
-        Plan::Installer { exe_candidates, .. } => {
+        Plan::Installer { exe_candidates, silent_args, uninstall_key, .. } => {
             report(Phase::RunningInstaller);
-            run_installer(spec, &part, &file, exe_candidates).map(|p| record(Kind::Installer, p))
+            run_installer(spec, &part, &file, silent_args, exe_candidates, uninstall_key.as_deref()).map(|p| record(Kind::Installer, p))
         }
         Plan::Unavailable(_) => unreachable!(),
     };
@@ -213,13 +223,19 @@ fn install_portable(spec: &AppSpec, zip_path: &Path, exe: &str, paths: &Paths) -
     Ok(dir.join(exe))
 }
 
-fn run_installer(spec: &AppSpec, part: &Path, file: &str, candidates: &[String]) -> Result<PathBuf, String> {
+fn run_installer(spec: &AppSpec, part: &Path, file: &str, args: &[String], candidates: &[String], key: Option<&str>) -> Result<PathBuf, String> {
     let setup = part.with_file_name(file);
     std::fs::rename(part, &setup).map_err(|e| e.to_string())?;
-    let status = installer_command(&setup).status();
+    let status = installer_command(&setup, args).status();
     let _ = std::fs::remove_file(&setup);
-    status.map_err(|e| format!("couldn't start the installer ({e})"))?;
-    find_installed(candidates).ok_or_else(|| format!("The installer finished, but {} wasn't found where expected. If you cancelled it, that's fine.", spec.name))
+    let status = status.map_err(|e| format!("couldn't start the installer ({e})"))?;
+    let found = find_installed(candidates).or_else(|| key.and_then(registry_exe));
+    if !status.success() && found.is_none() {
+        let code = status.code().map(|c| format!(" (code {c})")).unwrap_or_default();
+        return Err(format!("{}'s installer stopped before finishing{code}. Try again, or run it yourself from the release page.", spec.name));
+    }
+    found
+        .ok_or_else(|| format!("The installer finished, but {} wasn't found afterwards. If Windows asked for permission and you said no, that's fine: try again.", spec.name))
 }
 
 /// Where the official installer put the program, if it did.
@@ -232,20 +248,72 @@ pub fn find_installed(candidates: &[String]) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// The program named by an installer's `DisplayIcon` (per-user first, then per-machine).
 #[cfg(windows)]
-fn installer_command(setup: &Path) -> Command {
+fn registry_exe(key: &str) -> Option<PathBuf> {
     use std::os::windows::process::CommandExt;
-    // `start /wait` goes through the shell, so installers that need admin rights get the usual
-    // Windows prompt, and we still wait for them to finish.
+    for root in ["HKCU", "HKLM", r"HKLM\SOFTWARE\WOW6432Node"] {
+        let path = if root.contains('\\') {
+            format!(r"{root}\Microsoft\Windows\CurrentVersion\Uninstall\{key}")
+        } else {
+            format!(r"{root}\Software\Microsoft\Windows\CurrentVersion\Uninstall\{key}")
+        };
+        let Ok(out) = Command::new("reg").args(["query", &path, "/v", "DisplayIcon"]).creation_flags(0x0800_0000).output() else { continue };
+        let text = String::from_utf8_lossy(&out.stdout);
+        if let Some(exe) = parse_display_icon(&text) {
+            if exe.is_file() {
+                return Some(exe);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn registry_exe(_key: &str) -> Option<PathBuf> {
+    None
+}
+
+/// `    DisplayIcon    REG_SZ    "C:\x\App.exe",0` -> `C:\x\App.exe`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_display_icon(reg_output: &str) -> Option<PathBuf> {
+    let line = reg_output.lines().find(|l| l.trim_start().starts_with("DisplayIcon"))?;
+    let value = line.split("REG_SZ").nth(1)?.trim();
+    let value = value.trim_matches('"');
+    let value = match value.rsplit_once(',') {
+        Some((path, idx)) if idx.trim().parse::<i32>().is_ok() => path.trim_matches('"'),
+        _ => value,
+    };
+    (!value.is_empty()).then(|| PathBuf::from(value))
+}
+
+#[cfg(windows)]
+fn installer_command(setup: &Path, args: &[String]) -> Command {
+    use std::os::windows::process::CommandExt;
+    // `start /wait` goes through the shell, so an installer that needs admin rights gets the
+    // usual Windows prompt, and we still wait for it to finish. `/S` keeps NSIS quiet.
     let mut cmd = Command::new("cmd");
-    cmd.arg("/C").arg("start").arg("").arg("/wait").arg(setup);
+    cmd.arg("/C").arg("start").arg("").arg("/wait").arg(setup).args(args);
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     cmd
 }
 
 #[cfg(not(windows))]
-fn installer_command(setup: &Path) -> Command {
-    Command::new(setup)
+fn installer_command(setup: &Path, args: &[String]) -> Command {
+    let mut cmd = Command::new(setup);
+    cmd.args(args);
+    cmd
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn display_icon() {
+        let out = "\r\nHKEY_CURRENT_USER\\Software\\...\\StreamWave\r\n    DisplayIcon    REG_SZ    \"C:\\Users\\d\\AppData\\Local\\StreamWave\\StreamWave.exe\"\r\n";
+        assert_eq!(super::parse_display_icon(out).unwrap().to_string_lossy(), r"C:\Users\d\AppData\Local\StreamWave\StreamWave.exe");
+        let out = "    DisplayIcon    REG_SZ    C:\\Program Files\\BigWave Radio\\BigWaveRadio.exe,0";
+        assert_eq!(super::parse_display_icon(out).unwrap().to_string_lossy(), r"C:\Program Files\BigWave Radio\BigWaveRadio.exe");
+    }
 }
 
 /// Starts the app on its own; it keeps running if Wave Hub closes.

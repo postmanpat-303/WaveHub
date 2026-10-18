@@ -13,14 +13,18 @@ Wave Hub is free, for Windows and Linux. No account, no ads, no tracking.
 ## What it does
 
 - Shows a card for each app with its installed version and the newest version on GitHub.
-- One button per app: **Install**, **Update** or **Open**, with a progress bar while it downloads.
+- One click per app: **Install**, **Update** or **Open**. No dialogs. One smooth progress bar
+  shows each stage (Download, Check, Install) with size, speed and time left, and the button
+  turns into **Open** with a short "Installed!" message when it's done.
+- Problems show on the card itself, with **Retry**. **Cancel** stops a download and tidies up.
 - **Update all** updates every app that has a new version.
 - Checks every download against the app's published `SHA256SUMS.txt` before installing it.
 - Never replaces an app while it's open. Close it first and Wave Hub will update it.
 - Installs into your own user folder, so no admin password is needed:
   - Windows: `%LOCALAPPDATA%\WaveHub\apps` (the portable version of each app).
     You can switch to each app's official installer in **About → Settings**.
-    StreamWave always uses its installer.
+    StreamWave only ships an installer, so Wave Hub runs it silently (`/S`) and finds the
+    program afterwards (in its usual folder, or from the Windows uninstall entry).
   - Linux: `~/.local/share/WaveHub/apps` (the AppImage of each app).
 - ChipWave Tracker has no Linux download yet, so on Linux its card says
   "Windows only for now" and links to the build-from-source instructions.
@@ -48,6 +52,10 @@ tag. That doesn't use GitHub's API, so there's no hourly limit to run into. Down
 then `https://github.com/<repo>/releases/download/<tag>/<file>`.
 
 ## Building
+
+Development builds (`cargo run`) can slow downloads down to watch the progress bar:
+`WAVEHUB_SLOW_KBPS=2000 cargo run`. Release builds ignore this.
+
 
 You need Rust (via [rustup](https://rustup.rs)).
 
