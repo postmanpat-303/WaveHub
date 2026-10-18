@@ -15,6 +15,10 @@ use crate::store::{Installed, Kind, Paths, Settings};
 const BUY_ME_A_COFFEE: &str = "https://buymeacoffee.com/postmanpat";
 const PAYPAL: &str = "https://paypal.me/derekh100";
 
+/// Wave Hub's own release file for this computer. Releases must use exactly these names
+/// (see scripts/build-all.sh).
+const LAUNCHER_ASSET: &str = if cfg!(windows) { "WaveHub.exe" } else { "WaveHub-linux-x86_64" };
+
 /// Every colour the window uses, for one theme.
 pub struct Palette {
     pub dark: bool,
@@ -784,8 +788,11 @@ impl WaveHub {
                     self.check_hub_only(&ctx);
                 }
                 ui.label(RichText::new(text).color(color));
-                if matches!(&hub, Some(Latest::Found(tag)) if github::is_newer(tag, current)) {
-                    link(ui, "Download", &format!("https://github.com/{}/releases/latest", self.manifest.launcher_repo));
+                if let Some(Latest::Found(tag)) = hub.as_ref().filter(|h| matches!(h, Latest::Found(t) if github::is_newer(t, current))) {
+                    // Straight to this computer's file of the new release.
+                    let url = github::download_url(&self.manifest.launcher_repo, tag, LAUNCHER_ASSET);
+                    link(ui, &format!("Download {LAUNCHER_ASSET}"), &url);
+                    link(ui, "What's new", &format!("https://github.com/{}/releases/tag/{tag}", self.manifest.launcher_repo));
                 }
             });
         });
