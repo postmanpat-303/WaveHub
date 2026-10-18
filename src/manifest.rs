@@ -72,8 +72,9 @@ pub struct WindowsSpec {
     /// Portable zip with the program at its root.
     #[serde(default, deserialize_with = "names")]
     pub portable: Vec<String>,
-    /// The program inside the portable zip.
-    pub exe: Option<String>,
+    /// The program inside the portable zip, or names to try in order.
+    #[serde(default, deserialize_with = "names")]
+    pub exe: Vec<String>,
     /// The official setup program.
     #[serde(default, deserialize_with = "names")]
     pub installer: Vec<String>,
@@ -85,9 +86,10 @@ pub struct WindowsSpec {
     #[serde(default)]
     pub silent_args: Vec<String>,
     /// The installer's key under `...\CurrentVersion\Uninstall`, used to find the program
-    /// if it isn't in one of the `installed_exe` places.
-    #[serde(default)]
-    pub uninstall_key: Option<String>,
+    /// if it isn't in one of the `installed_exe` places. A list when the app's installer has
+    /// used more than one (e.g. before and after a rename); the first one registered wins.
+    #[serde(default, deserialize_with = "names")]
+    pub uninstall_key: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

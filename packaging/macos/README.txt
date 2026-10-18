@@ -7,8 +7,7 @@ The first time, macOS may say it can't check the app, because it isn't notarised
 Apple yet. Right-click (or Control-click) Wave Hub, choose Open, then Open again.
 After that it opens normally.
 
-On macOS, Wave Hub can install BigWave Radio. ChipWave Tracker and StreamWave don't
-have macOS versions yet.
+On macOS, Wave Hub can install BigWave Radio, ChipWave Tracker and StreamWave.
 
 More: https://github.com/postmanpat-303/WaveHub
 Support: https://buymeacoffee.com/postmanpat

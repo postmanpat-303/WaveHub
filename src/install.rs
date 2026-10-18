@@ -19,16 +19,17 @@ pub enum Plan {
     AppImage {
         files: Vec<String>,
     },
-    /// A zip: Windows portable (`exe` required) or a macOS `.app` (`exe` optional).
+    /// A zip: Windows portable (`exe` required, first one found wins) or a macOS `.app`
+    /// (`exe` optional).
     Portable {
         files: Vec<String>,
-        exe: Option<String>,
+        exe: Vec<String>,
     },
     Installer {
         files: Vec<String>,
         exe_candidates: Vec<String>,
         silent_args: Vec<String>,
-        uninstall_key: Option<String>,
+        uninstall_key: Vec<String>,
     },
     Unavailable(String),
 }
@@ -77,10 +78,7 @@ pub fn plan(spec: &AppSpec, prefer_installer: bool) -> Plan {
             silent_args: w.silent_args.clone(),
             uninstall_key: w.uninstall_key.clone(),
         });
-        let portable = match (w.portable.is_empty(), &w.exe) {
-            (false, Some(exe)) => Some(Plan::Portable { files: w.portable.clone(), exe: Some(exe.clone()) }),
-            _ => None,
-        };
+        let portable = (!w.portable.is_empty() && !w.exe.is_empty()).then(|| Plan::Portable { files: w.portable.clone(), exe: w.exe.clone() });
         let pick = if prefer_installer { installer.or(portable) } else { portable.or(installer) };
         pick.unwrap_or_else(|| Plan::Unavailable("No Windows download yet.".into()))
     } else if cfg!(target_os = "linux") {
@@ -97,7 +95,7 @@ pub fn plan(spec: &AppSpec, prefer_installer: bool) -> Plan {
         if m.zip.is_empty() {
             Plan::Unavailable(m.unavailable.unwrap_or_else(|| "No macOS download yet.".into()))
         } else {
-            Plan::Portable { files: m.zip, exe: m.exe }
+            Plan::Portable { files: m.zip, exe: m.exe.into_iter().collect() }
         }
     } else {
         Plan::Unavailable("Wave Hub supports Windows, Linux and macOS.".into())
@@ -171,10 +169,10 @@ pub fn install(spec: &AppSpec, tag: &str, plan: &Plan, paths: &Paths, previous: 
     let record = |kind, path| Record { version: version.clone(), tag: tag.to_string(), kind, path, installed_at: now(), external: false };
     let result = match plan {
         Plan::AppImage { .. } => install_appimage(spec, &part, paths).map(|p| record(Kind::AppImage, p)),
-        Plan::Portable { exe, .. } => install_portable(spec, &part, exe.as_deref(), paths).map(|p| record(Kind::PortableZip, p)),
+        Plan::Portable { exe, .. } => install_portable(spec, &part, exe, paths).map(|p| record(Kind::PortableZip, p)),
         Plan::Installer { exe_candidates, silent_args, uninstall_key, .. } => {
             report(Phase::RunningInstaller);
-            run_installer(spec, &part, &file, silent_args, exe_candidates, uninstall_key.as_deref()).map(|p| record(Kind::Installer, p))
+            run_installer(spec, &part, &file, silent_args, exe_candidates, uninstall_key).map(|p| record(Kind::Installer, p))
         }
         Plan::Unavailable(_) => unreachable!(),
     };
@@ -185,6 +183,16 @@ pub fn install(spec: &AppSpec, tag: &str, plan: &Plan, paths: &Paths, previous: 
             // tidy it if it was ours.
             if prev.kind != Kind::Installer && result.as_ref().is_ok_and(|r| r.kind == Kind::Installer) {
                 let _ = std::fs::remove_dir_all(paths.apps().join(&spec.id));
+            }
+            // The new version's .app has a new name (e.g. after an app is renamed): remove the
+            // old bundle Wave Hub put in Applications, so there aren't two copies.
+            if cfg!(target_os = "macos") && !prev.external {
+                let bundle = |p: &Path| p.ancestors().find(|a| a.extension().is_some_and(|e| e == "app")).map(Path::to_path_buf);
+                if let (Some(old_app), Some(new_app)) = (bundle(&prev.path), result.as_ref().ok().and_then(|r| bundle(&r.path))) {
+                    if old_app != new_app && old_app.starts_with(mac_apps_dir()) && old_app.is_dir() {
+                        let _ = std::fs::remove_dir_all(&old_app);
+                    }
+                }
             }
             // A Mac app that 0.2.2 or older kept in Wave Hub's own folder now lives in
             // ~/Applications: remove the old copy.
@@ -217,9 +225,9 @@ fn install_appimage(spec: &AppSpec, part: &Path, paths: &Paths) -> Result<PathBu
     Ok(target)
 }
 
-fn install_portable(spec: &AppSpec, zip_path: &Path, exe: Option<&str>, paths: &Paths) -> Result<PathBuf, String> {
+fn install_portable(spec: &AppSpec, zip_path: &Path, exe_names: &[String], paths: &Paths) -> Result<PathBuf, String> {
     let dir = app_dir(spec, paths);
-    let mut exe = exe.map(str::to_string);
+    let mut exe: Option<String> = None;
     let staging = paths.apps().join(format!("{}.new", spec.id));
     let old = paths.apps().join(format!("{}.old", spec.id));
     let _ = std::fs::remove_dir_all(&staging);
@@ -253,6 +261,7 @@ fn install_portable(spec: &AppSpec, zip_path: &Path, exe: Option<&str>, paths: &
         }
         // A Mac zip: find the .app and its program if the manifest doesn't say, or if it
         // has moved.
+        exe = exe_names.iter().find(|e| staging.join(e).is_file()).or(exe_names.first()).cloned();
         if exe.as_ref().is_none_or(|e| !staging.join(e).is_file()) {
             if let Some(found) = find_app_program(&staging) {
                 exe = Some(found);
@@ -362,13 +371,13 @@ fn install_mac_app(spec: &AppSpec, staging: &Path, exe: &str, paths: &Paths, app
     Ok(target.join(inner))
 }
 
-fn run_installer(spec: &AppSpec, part: &Path, file: &str, args: &[String], candidates: &[String], key: Option<&str>) -> Result<PathBuf, String> {
+fn run_installer(spec: &AppSpec, part: &Path, file: &str, args: &[String], candidates: &[String], keys: &[String]) -> Result<PathBuf, String> {
     let setup = part.with_file_name(file);
     std::fs::rename(part, &setup).map_err(|e| e.to_string())?;
     let status = installer_command(&setup, args).status();
     let _ = std::fs::remove_file(&setup);
     let status = status.map_err(|e| format!("couldn't start the installer ({e})"))?;
-    let found = find_installed(candidates).or_else(|| key.and_then(registry_exe));
+    let found = find_installed(candidates).or_else(|| keys.iter().find_map(|k| registry_exe(k)));
     if !status.success() && found.is_none() {
         let code = status.code().map(|c| format!(" (code {c})")).unwrap_or_default();
         return Err(format!("{}'s installer stopped before finishing{code}. Try again, or run it yourself from the release page.", spec.name));
@@ -569,9 +578,9 @@ mod tests {
         let zip = std::env::var("WAVEHUB_TEST_MAC_ZIP").expect("set WAVEHUB_TEST_MAC_ZIP");
         let m: crate::manifest::Manifest = serde_json::from_str(include_str!("../apps.json")).unwrap();
         let spec = m.apps.iter().find(|a| a.id == "bigwave-radio").unwrap();
-        let exe = spec.macos.as_ref().unwrap().exe.clone().unwrap();
+        let exe = spec.macos.as_ref().unwrap().exe.clone().unwrap_or_else(|| "ChipWave.app/Contents/MacOS/ChipWave".into());
         let paths = crate::store::Paths { data: std::env::temp_dir().join(format!("wavehub-mac-{}", std::process::id())) };
-        let path = super::install_portable(spec, std::path::Path::new(&zip), Some(&exe), &paths).unwrap();
+        let path = super::install_portable(spec, std::path::Path::new(&zip), std::slice::from_ref(&exe), &paths).unwrap();
         assert!(path.ends_with("BigWave Radio.app/Contents/MacOS/BigWaveRadio"));
         assert!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o111 != 0);
         assert!(path.parent().unwrap().parent().unwrap().join("Info.plist").is_file());
@@ -588,7 +597,7 @@ mod tests {
         let m: crate::manifest::Manifest = serde_json::from_str(include_str!("../apps.json")).unwrap();
         let spec = m.apps.iter().find(|a| a.id == "chipwave-tracker").unwrap();
         let paths = crate::store::Paths { data: std::env::temp_dir().join(format!("wavehub-cw-{}", std::process::id())) };
-        let path = super::install_portable(spec, std::path::Path::new(&zip), None, &paths).unwrap();
+        let path = super::install_portable(spec, std::path::Path::new(&zip), &[], &paths).unwrap();
         assert!(path.ends_with("ChipWave.app/Contents/MacOS/ChipWave"), "{}", path.display());
         let _ = std::fs::remove_dir_all(&paths.data);
     }

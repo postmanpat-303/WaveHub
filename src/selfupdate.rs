@@ -160,10 +160,7 @@ mod tests {
 
     #[test]
     fn names() {
-        assert_eq!(
-            candidates(InstallKind::WindowsSetup, "v0.2.0", "x86_64"),
-            ["WaveHub-0.2.0-setup-x64.exe", "WaveHub-0.2.0-windows-x64.zip", "WaveHub.exe"]
-        );
+        assert_eq!(candidates(InstallKind::WindowsSetup, "v0.2.0", "x86_64"), ["WaveHub-0.2.0-setup-x64.exe", "WaveHub-0.2.0-windows-x64.zip", "WaveHub.exe"]);
         assert_eq!(candidates(InstallKind::Deb, "0.2.0", "x86_64")[0], "WaveHub-0.2.0-linux-x86_64.deb");
         assert_eq!(candidates(InstallKind::Arch, "0.2.0", "x86_64")[0], "WaveHub-0.2.0-linux-x86_64.pkg.tar.zst");
         assert_eq!(candidates(InstallKind::AppImage, "0.2.0", "aarch64"), ["WaveHub-0.2.0-linux-aarch64.AppImage", "WaveHub-0.2.0-linux-aarch64.tar.gz"]);
@@ -221,9 +218,12 @@ mod tests {
                         files.contains(&file).then(|| format!("https://objects.example/{file}"))
                     })
                 };
-                let resp = match found {
-                    Some(loc) => format!("HTTP/1.1 302 Found\r\nLocation: {loc}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
-                    None => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
+                // A renamed repo: GitHub answers 301 with the new name for every path.
+                let moved = path.strip_prefix("/postmanpat-303/OldWaveHub/").map(|rest| format!("{me}{repo}/{rest}"));
+                let resp = match (moved, found) {
+                    (Some(loc), _) => format!("HTTP/1.1 301 Moved Permanently\r\nLocation: {loc}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+                    (None, Some(loc)) => format!("HTTP/1.1 302 Found\r\nLocation: {loc}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+                    (None, None) => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
                 };
                 let mut s = stream;
                 let _ = s.write_all(resp.as_bytes());
@@ -235,7 +235,10 @@ mod tests {
     #[test]
     fn picks_from_a_mock_github() {
         static RELEASES: &[(&str, &[&str])] = &[
-            ("v0.2.0", &["WaveHub-0.2.0-setup-x64.exe", "WaveHub-0.2.0-windows-x64.zip", "WaveHub-0.2.0-linux-x86_64.deb", "WaveHub-0.2.0-linux-x86_64.AppImage", "WaveHub.exe", "WaveHub-linux-x86_64"]),
+            (
+                "v0.2.0",
+                &["WaveHub-0.2.0-setup-x64.exe", "WaveHub-0.2.0-windows-x64.zip", "WaveHub-0.2.0-linux-x86_64.deb", "WaveHub-0.2.0-linux-x86_64.AppImage", "WaveHub.exe", "WaveHub-linux-x86_64"],
+            ),
             ("v0.1.0", &["WaveHub.exe", "WaveHub-linux-x86_64", "SHA256SUMS.txt"]),
         ];
         github::set_base_for_tests(&mock_github(RELEASES));
@@ -251,6 +254,10 @@ mod tests {
         // A release with only 0.1.0's names.
         assert_eq!(pick_for(InstallKind::WindowsSetup, "v0.1.0").as_deref(), Some("WaveHub.exe"));
         assert_eq!(pick_for(InstallKind::AppImage, "v0.1.0").as_deref(), Some("WaveHub-linux-x86_64"));
+        // The old name of a renamed repo still finds its releases and files.
+        assert_eq!(github::latest_tag("postmanpat-303/OldWaveHub").unwrap().as_deref(), Some("v0.2.0"));
+        assert!(github::asset_exists("postmanpat-303/OldWaveHub", "v0.2.0", "WaveHub.exe").unwrap());
+        assert!(!github::asset_exists("postmanpat-303/OldWaveHub", "v0.2.0", "Nope.exe").unwrap());
         // Nothing for this computer.
         assert_eq!(pick(repo, "v0.1.0", &candidates(InstallKind::MacOs, "v0.1.0", "aarch64")).unwrap(), None);
     }

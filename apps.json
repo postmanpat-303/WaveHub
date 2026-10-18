@@ -81,7 +81,9 @@
         "exe": "ChipWave.app/Contents/MacOS/ChipWave",
         "installed_app": [
           "/Applications/ChipWave.app",
-          "~/Applications/ChipWave.app"
+          "~/Applications/ChipWave.app",
+          "/Applications/ChipWave Studio.app",
+          "~/Applications/ChipWave Studio.app"
         ],
         "unavailable": "Not available on Mac yet."
       }

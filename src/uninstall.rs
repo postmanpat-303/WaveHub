@@ -167,8 +167,8 @@ fn uninstall_key(_key: &str) -> Option<(String, HashMap<String, String>)> {
 }
 
 fn run_uninstaller(spec: &AppSpec, record: &Record) -> Result<(), String> {
-    let key = spec.windows.as_ref().and_then(|w| w.uninstall_key.clone());
-    let registered = key.as_deref().and_then(uninstall_key);
+    let keys = spec.windows.as_ref().map(|w| w.uninstall_key.clone()).unwrap_or_default();
+    let registered = keys.iter().find_map(|k| uninstall_key(k));
     let cmd = registered.as_ref().and_then(|(_, v)| quiet_command(v)).or_else(|| {
         // No registry entry: look next to the program.
         let dir = record.path.parent()?;
@@ -184,7 +184,7 @@ fn run_uninstaller(spec: &AppSpec, record: &Record) -> Result<(), String> {
     let status = install::installer_command(&cmd.program, &cmd.args).status().map_err(|e| format!("Couldn't start {}'s uninstaller ({e}).", spec.name))?;
     // NSIS uninstallers copy themselves to a temporary folder and return straight away, so
     // wait for the program and its registry entry to really go.
-    let gone = || !record.path.exists() && key.as_deref().and_then(uninstall_key).is_none();
+    let gone = || !record.path.exists() && keys.iter().all(|k| uninstall_key(k).is_none());
     let deadline = Instant::now() + Duration::from_secs(120);
     while Instant::now() < deadline {
         if gone() {
@@ -286,7 +286,7 @@ pub fn check_files(spec: &AppSpec, record: &Record, paths: &Paths) -> Files {
         // Wave Hub's own folder is still there, only the program went.
         Kind::AppImage | Kind::PortableZip => install::app_dir(spec, paths).is_dir() || app_bundle(&record.path).is_some_and(|a| a.is_dir()),
         // The setup's Uninstall entry is still registered, or its folder is still there.
-        Kind::Installer => spec.windows.as_ref().and_then(|w| w.uninstall_key.as_deref()).and_then(uninstall_key).is_some() || record.path.parent().is_some_and(Path::is_dir),
+        Kind::Installer => spec.windows.as_ref().is_some_and(|w| w.uninstall_key.iter().any(|k| uninstall_key(k).is_some())) || record.path.parent().is_some_and(Path::is_dir),
         Kind::SystemPackage | Kind::MacApp => false,
     };
     if still_installed && !(record.external && record.kind != Kind::Installer) {
@@ -303,11 +303,11 @@ pub fn find_external(spec: &AppSpec) -> Option<Record> {
     let record = |kind, path: PathBuf, version: String| Record { version, tag: String::new(), kind, path, installed_at: now(), external: true };
     if cfg!(windows) {
         let w = spec.windows.as_ref()?;
-        let key = w.uninstall_key.as_deref().and_then(uninstall_key);
+        let key = w.uninstall_key.iter().find_map(|k| uninstall_key(k));
         // Still registered but the program file has gone (Windows Security quarantine): use
         // the registered icon path, so the card shows FILES MISSING with Repair.
         let registered = || key.as_ref().and_then(|(_, v)| v.get("DisplayIcon")).map(|icon| PathBuf::from(display_icon_path(icon)));
-        let path = install::find_installed(&w.installed_exe).or_else(|| w.uninstall_key.as_deref().and_then(install::registry_exe)).or_else(registered)?;
+        let path = install::find_installed(&w.installed_exe).or_else(|| w.uninstall_key.iter().find_map(|k| install::registry_exe(k))).or_else(registered)?;
         let version = key.as_ref().and_then(|(_, v)| v.get("DisplayVersion").cloned()).unwrap_or_default();
         return Some(record(Kind::Installer, path, version));
     }

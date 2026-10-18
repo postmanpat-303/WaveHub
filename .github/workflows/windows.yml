@@ -219,6 +219,8 @@ jobs:
           $k = $keys | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $k) { throw "ChipWave's setup wrote no ChipWaveTracker uninstall entry" }
           Get-ItemProperty $k | Format-List DisplayName, DisplayVersion, Publisher, DisplayIcon, UninstallString
+          # After the rename only the display name changes: Wave Hub must still find it.
+          Set-ItemProperty $k -Name DisplayName -Value 'ChipWave Studio'
           Start-Process $hub -ArgumentList '--list-apps' -Wait -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\cw-list.txt"
           Get-Content "$env:RUNNER_TEMP\cw-list.txt"
           if (-not (Select-String "$env:RUNNER_TEMP\cw-list.txt" -Pattern 'chipwave-tracker: 0' -Quiet)) { throw "Wave Hub didn't find ChipWave installed by its setup" }
@@ -229,21 +231,21 @@ jobs:
           if (Test-Path $k) { throw "ChipWave's uninstall entry is still there" }
           "ChipWave setup install found and removed"
 
-      - name: Upgrade from the published 0.2.3 setup (apps and uninstall entry kept)
+      - name: Upgrade from the published 0.2.4 setup (apps and uninstall entry kept)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $v = "${{ steps.ver.outputs.ver }}"
           $old = "$env:RUNNER_TEMP\old-setup.exe"
-          gh release download v0.2.3 -R postmanpat-303/WaveHub --pattern 'WaveHub-0.2.3-setup-x64.exe' -O $old
+          gh release download v0.2.4 -R postmanpat-303/WaveHub --pattern 'WaveHub-0.2.4-setup-x64.exe' -O $old
           $p = Start-Process $old -ArgumentList '/S' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "0.2.3 setup exit $($p.ExitCode)" }
+          if ($p.ExitCode -ne 0) { throw "0.2.4 setup exit $($p.ExitCode)" }
           $dir = "$env:LOCALAPPDATA\Programs\Wave Hub"
           $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub'
           Get-ItemProperty $key | Format-List DisplayName, DisplayVersion, Publisher
           $p = Start-Process "$dir\WaveHub.exe" -ArgumentList '--install', 'bigwave-radio' -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\up-install.txt"
           Get-Content "$env:RUNNER_TEMP\up-install.txt"
-          if ($p.ExitCode -ne 0) { throw "0.2.3 could not install BigWave Radio" }
+          if ($p.ExitCode -ne 0) { throw "0.2.4 could not install BigWave Radio" }
           $p = Start-Process "dist\v$v\WaveHub-$v-setup-x64.exe" -ArgumentList '/S' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "$v setup exit $($p.ExitCode)" }
           $e = Get-ItemProperty $key
@@ -263,7 +265,7 @@ jobs:
           Start-Sleep 5
           if (Test-Path "$dir\WaveHub.exe") { throw "uninstall left the program behind" }
           if (Test-Path $key) { throw "uninstall left its entry behind" }
-          "upgrade from 0.2.3 OK"
+          "upgrade from 0.2.4 OK"
 
       - name: Microsoft Defender scan (information only)
         continue-on-error: true

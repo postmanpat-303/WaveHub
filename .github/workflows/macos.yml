@@ -88,23 +88,46 @@ jobs:
           test ! -e "$APP"
           "$BIN" --list-apps | grep -q "chipwave-tracker: not installed"
 
-      - name: BigWave Radio (checksum-checked) and StreamWave (no Mac file yet)
+      - name: BigWave Radio and StreamWave (checksum-checked installs, StreamWave launched)
         run: |
           BIN="$PWD/dist/Wave Hub.app/Contents/MacOS/WaveHub"
-          "$BIN" --install bigwave-radio | tee "$RUNNER_TEMP/bw.log"
+          "$BIN" --install bigwave-radio 2>&1 | tee "$RUNNER_TEMP/bw.log"
+          grep -q Verifying "$RUNNER_TEMP/bw.log"
           test -d "$HOME/Applications/BigWave Radio.app"
           "$BIN" --uninstall bigwave-radio
           test ! -e "$HOME/Applications/BigWave Radio.app"
-          if "$BIN" --install streamwave > "$RUNNER_TEMP/sw.log" 2>&1; then cat "$RUNNER_TEMP/sw.log"; echo "::notice::StreamWave now has a Mac download"; "$BIN" --uninstall streamwave; else cat "$RUNNER_TEMP/sw.log"; grep -q "no download for macOS" "$RUNNER_TEMP/sw.log"; fi
+          SW="$HOME/Applications/StreamWave.app"
+          "$BIN" --install streamwave 2>&1 | tee "$RUNNER_TEMP/sw.log"
+          grep -q Verifying "$RUNNER_TEMP/sw.log"
+          test -x "$SW/Contents/MacOS/StreamWave"
+          open "$SW"
+          sleep 15
+          screencapture -x "$RUNNER_TEMP/streamwave-launch.png" || true
+          pgrep -f "StreamWave.app/Contents/MacOS/StreamWave" || { echo "StreamWave did not start"; exit 1; }
+          pkill -f "StreamWave.app/Contents/MacOS/StreamWave" || true
+          sleep 3
+          "$BIN" --uninstall streamwave
+          test ! -e "$SW"
+          "$BIN" --list-apps | grep -q "streamwave: not installed"
 
-      - name: Upgrade from the published 0.2.3 app (installed apps kept)
+      - name: A ChipWave copy renamed to "ChipWave Studio.app" is still found
+        run: |
+          BIN="$PWD/dist/Wave Hub.app/Contents/MacOS/WaveHub"
+          "$BIN" --install chipwave-tracker
+          mv "$HOME/Applications/ChipWave.app" "$HOME/Applications/ChipWave Studio.app"
+          rm -rf "$HOME/Library/Application Support/WaveHub/installed.json"
+          "$BIN" --list-apps | tee "$RUNNER_TEMP/cws.log"
+          grep -q "chipwave-tracker: .*ChipWave Studio.app" "$RUNNER_TEMP/cws.log"
+          rm -rf "$HOME/Applications/ChipWave Studio.app"
+
+      - name: Upgrade from the published 0.2.4 app (installed apps kept)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VER=${{ steps.ver.outputs.ver }}
           T="$RUNNER_TEMP/up"; mkdir -p "$T"
-          gh release download v0.2.3 -R postmanpat-303/WaveHub --pattern 'WaveHub-0.2.3-macos-universal.zip' -D "$T"
-          ditto -x -k "$T/WaveHub-0.2.3-macos-universal.zip" "$HOME/Applications"
+          gh release download v0.2.4 -R postmanpat-303/WaveHub --pattern 'WaveHub-0.2.4-macos-universal.zip' -D "$T"
+          ditto -x -k "$T/WaveHub-0.2.4-macos-universal.zip" "$HOME/Applications"
           OLD="$HOME/Applications/Wave Hub.app/Contents/MacOS/WaveHub"
           "$OLD" --version
           "$OLD" --install bigwave-radio
@@ -117,7 +140,7 @@ jobs:
           grep -q "bigwave-radio: 0" "$T/list.txt"
           "$NEW" --uninstall bigwave-radio
           rm -rf "$HOME/Applications/Wave Hub.app"
-          echo "upgrade from 0.2.3 OK"
+          echo "upgrade from 0.2.4 OK"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -127,6 +150,7 @@ jobs:
             dist/v*/WaveHub-*-macos-universal.zip
             ${{ runner.temp }}/macos-launch.png
             ${{ runner.temp }}/chipwave-launch.png
+            ${{ runner.temp }}/streamwave-launch.png
 
       - name: Attach to the release and update SHA256SUMS.txt
         if: inputs.release_tag != ''

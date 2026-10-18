@@ -48,25 +48,48 @@ fn agent(follow_redirects: bool) -> ureq::Agent {
 /// The newest stable release's tag, or `None` when the repo has no releases (or doesn't exist).
 pub fn latest_tag(repo: &str) -> Result<Option<String>, String> {
     let url = format!("{}/{repo}/releases/latest", base());
-    let resp = agent(false).get(&url).call().map_err(|e| format!("couldn't reach GitHub ({e})"))?;
-    let status = resp.status().as_u16();
+    let (status, location) = call(false, &url)?;
     if status == 404 {
         return Ok(None);
     }
     if !(300..400).contains(&status) {
         return Err(format!("GitHub answered {status}"));
     }
-    let location = resp.headers().get("location").and_then(|v| v.to_str().ok()).unwrap_or_default();
-    // GitHub sends an absolute URL; accept a path-only one too.
-    let location = if location.starts_with('/') { format!("https://github.com{location}") } else { location.replacen(&base(), "https://github.com", 1) };
-    Ok(tag_from_location(&location, repo))
+    Ok(tag_from_location(&location))
 }
 
-/// `https://github.com/<repo>/releases/tag/v1.2.3` -> `v1.2.3`. Anything else (GitHub sends repos
-/// without releases to the release list) -> `None`.
-pub fn tag_from_location(location: &str, repo: &str) -> Option<String> {
-    let prefix = format!("https://github.com/{repo}/releases/tag/");
-    let tag = location.strip_prefix(&prefix)?;
+/// One request that doesn't follow the redirect to a release's page or file, but does follow
+/// GitHub's own "moved permanently" for a repo that was renamed or moved
+/// (`github.com/owner/OldName/...` -> `github.com/owner/NewName/...`), so an app keeps working
+/// in Wave Hub after its repo is renamed. Gives the status and the absolute `Location`.
+fn call(head: bool, url: &str) -> Result<(u16, String), String> {
+    let mut url = url.to_string();
+    for _ in 0..4 {
+        let a = agent(false);
+        let resp = if head { a.head(&url).call() } else { a.get(&url).call() }.map_err(|e| format!("couldn't reach GitHub ({e})"))?;
+        let status = resp.status().as_u16();
+        let location = resp.headers().get("location").and_then(|v| v.to_str().ok()).unwrap_or_default();
+        // GitHub sends an absolute URL; accept a path-only one too.
+        let location = if location.starts_with('/') { format!("https://github.com{location}") } else { location.replacen(&base(), "https://github.com", 1) };
+        if !(matches!(status, 301 | 308) && location.starts_with("https://github.com/")) {
+            return Ok((status, location));
+        }
+        url = location.replacen("https://github.com", &base(), 1);
+    }
+    Err("GitHub sent too many redirects".into())
+}
+
+/// `https://github.com/<owner>/<repo>/releases/tag/v1.2.3` -> `v1.2.3`, for any repo (a renamed
+/// one answers with its new name). Anything else (GitHub sends repos without releases to the
+/// release list) -> `None`.
+pub fn tag_from_location(location: &str) -> Option<String> {
+    let rest = location.strip_prefix("https://github.com/")?;
+    let mut parts = rest.splitn(5, '/');
+    let (owner, name) = (parts.next()?, parts.next()?);
+    if owner.is_empty() || name.is_empty() || parts.next()? != "releases" || parts.next()? != "tag" {
+        return None;
+    }
+    let tag = parts.next()?;
     let ok = !tag.is_empty() && tag.len() < 64 && tag.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-+".contains(&b));
     ok.then(|| tag.to_string())
 }
@@ -84,8 +107,7 @@ pub fn release_page(repo: &str, tag: &str) -> String {
 /// redirect to the file's storage for files that exist and 404 for ones that don't.
 pub fn asset_exists(repo: &str, tag: &str, file: &str) -> Result<bool, String> {
     let url = download_url(repo, tag, file);
-    let resp = agent(false).head(&url).call().map_err(|e| format!("couldn't reach GitHub ({e})"))?;
-    match resp.status().as_u16() {
+    match call(true, &url)?.0 {
         200..=399 => Ok(true),
         404 => Ok(false),
         s => Err(format!("GitHub answered {s} for {file}")),
@@ -193,9 +215,11 @@ mod tests {
 
     #[test]
     fn tags_and_versions() {
-        let repo = "postmanpat-303/BigWaveRadio";
-        assert_eq!(tag_from_location("https://github.com/postmanpat-303/BigWaveRadio/releases/tag/v0.9.6", repo).as_deref(), Some("v0.9.6"));
-        assert_eq!(tag_from_location("https://github.com/postmanpat-303/BigWaveRadio/releases", repo), None);
+        assert_eq!(tag_from_location("https://github.com/postmanpat-303/BigWaveRadio/releases/tag/v0.9.6").as_deref(), Some("v0.9.6"));
+        assert_eq!(tag_from_location("https://github.com/postmanpat-303/BigWaveRadio/releases"), None);
+        // After a repo rename GitHub answers with the new name.
+        assert_eq!(tag_from_location("https://github.com/postmanpat-303/ChipWaveStudio/releases/tag/v0.3.0").as_deref(), Some("v0.3.0"));
+        assert_eq!(tag_from_location("https://github.com/postmanpat-303/ChipWaveStudio/releases/latest"), None);
         assert!(is_newer("v0.2.3.5", "0.2.3"));
         assert!(!is_newer("0.9.6", "v0.9.6"));
         assert!(is_newer("0.10.0", "0.9.9"));
