@@ -1,8 +1,13 @@
 fn main() {
     println!("cargo:rerun-if-changed=assets/icons/wavehub.ico");
+    println!("cargo:rerun-if-changed=assets/wavehub.manifest");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/icons/wavehub.ico");
+        // Declares "runs as the user, no admin" and Windows 10/11 support, like signed apps do.
+        res.set_manifest_file("assets/wavehub.manifest");
+        res.set("OriginalFilename", "WaveHub.exe");
+        res.set("InternalName", "WaveHub");
         res.set("ProductName", "Wave Hub");
         res.set("FileDescription", "Wave Hub");
         res.set("CompanyName", "Derek Heasley");

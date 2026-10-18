@@ -694,7 +694,8 @@ impl WaveHub {
                 s.errors.remove(&spec.id);
             }
             Err(e) => {
-                s.errors.insert(spec.id.clone(), Failure { message: format!("Couldn't open {}: {e}", spec.name), retry: false });
+                let message = if e.starts_with("Windows ") { e } else { format!("Couldn't open {}: {e}", spec.name) };
+                s.errors.insert(spec.id.clone(), Failure { message, retry: false });
             }
         }
     }

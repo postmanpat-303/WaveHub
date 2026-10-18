@@ -353,7 +353,12 @@ mod tests {
 /// Starts the app on its own; it keeps running if Wave Hub closes.
 pub fn open(path: &Path) -> Result<(), String> {
     if !path.is_file() {
-        return Err(format!("{} is missing. Try installing again.", path.display()));
+        let hint = if cfg!(windows) {
+            " If Windows Security removed it, see Windows Security > Virus & threat protection > Protection history."
+        } else {
+            ""
+        };
+        return Err(format!("{} is missing. Try installing again.{hint}", path.display()));
     }
     let mut cmd = Command::new(path);
     if let Some(dir) = path.parent() {
@@ -364,12 +369,32 @@ pub fn open(path: &Path) -> Result<(), String> {
     for var in ["APPIMAGE", "APPDIR", "OWD", "ARGV0"] {
         cmd.env_remove(var);
     }
-    let mut child = cmd.spawn().map_err(|e| format!("couldn't start it ({e})"))?;
+    let mut child = cmd.spawn().map_err(|e| start_error(path, &e))?;
     // Reap it when it exits so it doesn't linger as a zombie.
     std::thread::spawn(move || {
         let _ = child.wait();
     });
     Ok(())
+}
+
+/// A friendly message for a program that wouldn't start.
+fn start_error(path: &Path, e: &std::io::Error) -> String {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    match e.raw_os_error() {
+        // ERROR_VIRUS_INFECTED / ERROR_VIRUS_DELETED: Microsoft Defender stopped it.
+        Some(225) | Some(226) if cfg!(windows) => format!(
+            "Windows Security blocked {name}. New apps that aren't code-signed yet are sometimes \
+             flagged by mistake. If you trust it: open Windows Security > Virus & threat protection > \
+             Protection history, choose the {name} entry, then Actions > Allow on device (or Restore). \
+             Then click Open again, or Reinstall if it was removed."
+        ),
+        // ERROR_ACCESS_DENIED, often Smart App Control or a company policy.
+        Some(5) if cfg!(windows) => format!(
+            "Windows didn't allow {name} to start (access denied). Smart App Control or a work or \
+             school policy may be blocking apps that aren't code-signed yet."
+        ),
+        _ => format!("couldn't start it ({e})"),
+    }
 }
 
 /// Removes an app that Wave Hub installed into its own folder.
