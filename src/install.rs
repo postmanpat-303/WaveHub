@@ -132,10 +132,8 @@ pub fn install(spec: &AppSpec, tag: &str, plan: &Plan, paths: &Paths, previous: 
         return Err(why.clone());
     }
     report(Phase::Checking);
-    let file = match plan.files() {
-        [one] => fill(one, tag),
-        files => resolve_file(&spec.repo, tag, files)?.ok_or_else(|| format!("This {} release has no download for {} yet.", spec.name, os_label()))?,
-    };
+    // Ask first even for a single name, so a missing file says so (not "can't be checked").
+    let file = resolve_file(&spec.repo, tag, plan.files())?.ok_or_else(|| format!("This {} release has no download for {} yet.", spec.name, os_label()))?;
     // The first checksum list the release has. Older releases may not have one; install
     // unchecked rather than not at all.
     let mut expected = None;
