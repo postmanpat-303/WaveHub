@@ -25,6 +25,10 @@ pub struct AppSpec {
     /// Name of a built-in icon (see `ui::icon_bytes`).
     #[serde(default)]
     pub icon: String,
+    /// A short announcement shown on the app's card, e.g. "New name! Formerly X. Same app,
+    /// nothing to do." Text up to the first "! " is shown in bold.
+    #[serde(default)]
+    pub notice: Option<String>,
     /// Card accent colour.
     #[serde(default = "default_accent")]
     pub accent: [u8; 3],

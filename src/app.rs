@@ -576,6 +576,10 @@ impl WaveHub {
                     ui.add(egui::Label::new(RichText::new(&spec.description).color(p().muted)).wrap());
                 });
             });
+            if let Some(notice) = spec.notice.as_deref().filter(|n| !n.trim().is_empty()) {
+                ui.add_space(8.0);
+                notice_note(ui, notice, accent);
+            }
             ui.add_space(10.0);
 
             // Status chip and version line.
@@ -1418,6 +1422,28 @@ fn main_button(ui: &mut Ui, label: &str, fill: Color32, size: egui::Vec2, enable
     } else {
         response
     }
+}
+
+/// A small announcement on an app's card (apps.json `notice`): a soft accent-tinted strip
+/// with a bold lead-in ("New name!") and the rest in normal text.
+fn notice_note(ui: &mut Ui, notice: &str, accent: Color32) {
+    let (head, rest) = match notice.split_once("! ") {
+        Some((h, r)) if h.len() <= 24 => (format!("{h}!"), r.trim().to_string()),
+        _ => (String::new(), notice.trim().to_string()),
+    };
+    let fill = tint(accent, if p().dark { 0.22 } else { 0.10 });
+    let head_color = if p().dark { tint(accent, 0.85).lerp_to_gamma(Color32::WHITE, 0.45) } else { accent };
+    egui::Frame::new().fill(fill).corner_radius(10).inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let mut job = egui::text::LayoutJob::default();
+        let size = 12.5;
+        if !head.is_empty() {
+            job.append(&head, 0.0, egui::TextFormat { font_id: FontId::new(size, bold()), color: head_color, ..Default::default() });
+            job.append(" ", 0.0, egui::TextFormat { font_id: FontId::proportional(size), color: p().text, ..Default::default() });
+        }
+        job.append(&rest, 0.0, egui::TextFormat { font_id: FontId::proportional(size), color: p().text, ..Default::default() });
+        ui.add(egui::Label::new(job).wrap());
+    });
 }
 
 fn status_chip(ui: &mut Ui, text: &str, color: Color32) {

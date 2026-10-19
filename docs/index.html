@@ -75,6 +75,8 @@
   .app .plat { display:flex; flex-wrap:wrap; gap:6px; margin:14px 0 18px; }
   .app .plat span { font-size:12px; font-weight:600; letter-spacing:.03em; padding:3px 10px; border-radius:999px; background:#f1ece4; color:#55576b; }
   .app .plat span.on { background:color-mix(in srgb, var(--accent) 14%, white); color:color-mix(in srgb, var(--accent) 70%, black); }
+  .app .notice { margin:-2px 0 12px; padding:8px 12px; border-radius:12px; font-size:14px; line-height:1.4; background:color-mix(in srgb, var(--accent) 10%, white); color:#2b2d3c; }
+  .app .notice b { color:color-mix(in srgb, var(--accent) 80%, black); }
   .app .go { margin-top:auto; display:flex; gap:10px; flex-wrap:wrap; }
   .app .go a { padding:9px 18px; border-radius:999px; font-weight:600; font-size:14px; }
   .app .go a.site { background:var(--accent); color:#fff; box-shadow:0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent); }
@@ -181,6 +183,7 @@
     </div>
     <div class="card app" style="--accent:#145cff">
       <div class="head"><img src="icons/chipwave-tracker.png" alt="ChipWave Studio icon: an engraved dragonfly on blue" width="64" height="64"><div><h3>ChipWave Studio</h3></div></div>
+      <p class="notice"><b>New name!</b> Formerly ChipWave Tracker. Same app, same files, nothing to do.</p>
       <p>A modern OctaMED-inspired music tracker. Write patterns, build songs and play them back live.</p>
       <div class="plat"><span class="on">Windows</span><span class="on">Mac</span><span>Linux: build from source</span></div>
       <div class="go"><a class="site" href="https://postmanpat-303.github.io/ChipWaveStudio/">Website</a><a class="repo" href="https://github.com/postmanpat-303/ChipWaveStudio">GitHub</a></div>
