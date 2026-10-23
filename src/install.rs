@@ -807,7 +807,7 @@ mod tests {
         assert!(super::create_shortcuts_script(spec, exe, true).contains("$onlyExisting = $true"));
         let paths = crate::store::Paths { data: std::path::PathBuf::from("C:/x/WaveHub") };
         let r = super::remove_shortcuts_script(spec, &paths);
-        assert!(r.contains("$apps = 'C:/x/WaveHub/apps\\'"), "{r}");
+        assert!(r.contains(&format!("$apps = '{}\\'", paths.apps().display())), "{r}");
         assert!(!r.contains('"'));
     }
 
