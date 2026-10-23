@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       hub_tag:
-        description: "Wave Hub release to test (e.g. v0.2.5)"
+        description: "Wave Hub release to test (e.g. v0.2.7)"
         required: true
-        default: "v0.2.5"
+        default: "v0.2.7"
       app:
         description: "App id from apps.json (bigwave-radio, chipwave-tracker, streamwave)"
         required: true
