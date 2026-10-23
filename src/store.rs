@@ -67,6 +67,10 @@ pub struct Record {
     /// Found on this computer rather than installed by Wave Hub.
     #[serde(default)]
     pub external: bool,
+    /// Windows portable: Wave Hub has made its Start menu and Desktop shortcuts (once; a
+    /// shortcut the user deletes afterwards isn't put back on every start).
+    #[serde(default)]
+    pub shortcuts_done: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -81,11 +85,13 @@ pub struct Settings {
     pub prefer_installer: bool,
     /// "light" (the default) or "dark".
     pub theme: String,
+    /// Windows portable installs: make Start menu and Desktop shortcuts (on by default).
+    pub shortcuts: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { prefer_installer: false, theme: "light".into() }
+        Self { prefer_installer: false, theme: "light".into(), shortcuts: true }
     }
 }
 

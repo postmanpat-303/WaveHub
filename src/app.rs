@@ -279,7 +279,37 @@ impl WaveHub {
         let confirm_uninstall = std::env::var("WAVEHUB_CONFIRM_UNINSTALL").ok();
         let hub = Self { manifest, paths, settings, shared, tab, row_heights: Vec::new(), shown_progress: HashMap::new(), confirm_uninstall };
         hub.check_now(&cc.egui_ctx);
+        hub.repair_shortcuts();
         hub
+    }
+
+    /// Windows: portable installs from before Wave Hub made shortcuts get them, once, in the
+    /// background (PowerShell takes a moment).
+    fn repair_shortcuts(&self) {
+        if !cfg!(windows) || !self.settings.shortcuts {
+            return;
+        }
+        let shared = self.shared.clone();
+        let paths = self.paths.clone();
+        let apps = self.manifest.apps.clone();
+        std::thread::spawn(move || {
+            let mut todo = lock(&shared).installed.clone();
+            if !install::repair_shortcuts(&apps, &mut todo) {
+                return;
+            }
+            let mut s = lock(&shared);
+            let mut changed = false;
+            for (id, done) in todo.apps.iter().filter(|(_, r)| r.shortcuts_done) {
+                // Only if it's still the same install (an update may have finished meanwhile).
+                if let Some(r) = s.installed.apps.get_mut(id).filter(|r| r.path == done.path && !r.shortcuts_done) {
+                    r.shortcuts_done = true;
+                    changed = true;
+                }
+            }
+            if changed {
+                let _ = s.installed.save(&paths);
+            }
+        });
     }
 
     /// Looks up the newest release of every app (and of Wave Hub) in the background.
@@ -392,6 +422,7 @@ impl WaveHub {
         let shared = self.shared.clone();
         let paths = self.paths.clone();
         let prefer_installer = self.settings.prefer_installer;
+        let shortcuts = self.settings.shortcuts;
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             for (spec, tag, cancel) in queued {
@@ -401,7 +432,7 @@ impl WaveHub {
                     s.notes.insert(spec.id.clone(), (Instant::now(), "Cancelled.".into()));
                     continue;
                 }
-                run_one(&shared, &paths, &spec, &tag, prefer_installer, &cancel, &ctx);
+                run_one(&shared, &paths, &spec, &tag, prefer_installer, shortcuts, &cancel, &ctx);
             }
         });
     }
@@ -1085,6 +1116,16 @@ impl WaveHub {
                     egui::Label::new(RichText::new("The portable version needs no admin rights. StreamWave always uses its own installer, run quietly in the background.").color(p().muted).small())
                         .wrap(),
                 );
+                ui.add_space(4.0);
+                let mut v = self.settings.shortcuts;
+                if ui.checkbox(&mut v, "Create Start Menu and Desktop shortcuts").changed() {
+                    self.settings.shortcuts = v;
+                    let _ = self.settings.save(&self.paths);
+                    if v {
+                        self.repair_shortcuts();
+                    }
+                }
+                ui.add(egui::Label::new(RichText::new("For portable apps. The official installers make their own.").color(p().muted).small()).wrap());
             } else {
                 ui.add(egui::Label::new(RichText::new("Apps are installed as AppImages in your home folder. No password needed.").color(p().muted)).wrap());
             }
@@ -1122,12 +1163,13 @@ impl WaveHub {
 }
 
 /// Runs one install on the current (background) thread and records the outcome.
-fn run_one(shared: &Arc<Mutex<Shared>>, paths: &Paths, spec: &AppSpec, tag: &str, prefer_installer: bool, cancel: &AtomicBool, ctx: &egui::Context) {
+#[allow(clippy::too_many_arguments)]
+fn run_one(shared: &Arc<Mutex<Shared>>, paths: &Paths, spec: &AppSpec, tag: &str, prefer_installer: bool, shortcuts: bool, cancel: &AtomicBool, ctx: &egui::Context) {
     let previous = lock(shared).installed.apps.get(&spec.id).cloned();
     let plan = plan_for(spec, prefer_installer, previous.as_ref());
     // Download speed: sampled every half second, smoothed so the ETA doesn't jump about.
     let mut sample: Option<(Instant, u64)> = None;
-    let result = install::install(spec, tag, &plan, paths, previous.as_ref(), cancel, &mut |phase| {
+    let result = install::install(spec, tag, &plan, paths, previous.as_ref(), shortcuts, cancel, &mut |phase| {
         let mut s = lock(shared);
         let Some(job) = s.jobs.get_mut(&spec.id) else {
             return;

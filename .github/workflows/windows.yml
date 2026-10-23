@@ -203,6 +203,56 @@ jobs:
             if ($p.ExitCode -ne 0) { throw "$id did not uninstall (exit $($p.ExitCode))" }
           }
 
+      - name: Portable installs get Start menu and Desktop shortcuts, and uninstall removes them
+        run: |
+          $v = "${{ steps.ver.outputs.ver }}"
+          $hub = "dist\v$v\WaveHub.exe"
+          $programs = [Environment]::GetFolderPath('Programs')
+          $desktop = [Environment]::GetFolderPath('Desktop')
+          $sh = New-Object -ComObject WScript.Shell
+          $apps = @{ 'bigwave-radio' = 'BigWave Radio'; 'chipwave-tracker' = 'ChipWave Studio' }
+          foreach ($id in $apps.Keys) {
+            $name = $apps[$id]
+            $p = Start-Process $hub -ArgumentList '--install', $id -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\sc-$id.txt"
+            Get-Content "$env:RUNNER_TEMP\sc-$id.txt"
+            if ($p.ExitCode -ne 0) { throw "$id did not install (exit $($p.ExitCode))" }
+            foreach ($place in $programs, $desktop) {
+              $lnk = Join-Path $place "$name.lnk"
+              if (-not (Test-Path -LiteralPath $lnk)) { throw "no shortcut $lnk" }
+              $s = $sh.CreateShortcut($lnk)
+              "$lnk -> $($s.TargetPath) (in $($s.WorkingDirectory), icon $($s.IconLocation))"
+              if (-not (Test-Path -LiteralPath $s.TargetPath)) { throw "$lnk points at a missing program" }
+              if ($s.TargetPath -notlike "$env:LOCALAPPDATA\WaveHub\apps\$id\*") { throw "$lnk points somewhere else" }
+              if ($s.WorkingDirectory -ne (Split-Path $s.TargetPath)) { throw "$lnk has the wrong start folder" }
+            }
+          }
+          $json = "$env:LOCALAPPDATA\WaveHub\installed.json"
+          Get-Content $json
+          # Repair (installs from 0.2.6 and older): no shortcuts and no flag -> made once.
+          $j = Get-Content $json -Raw | ConvertFrom-Json
+          $j.apps.'bigwave-radio'.shortcuts_done = $false
+          $j | ConvertTo-Json -Depth 5 | Set-Content $json
+          Remove-Item (Join-Path $programs 'BigWave Radio.lnk'), (Join-Path $desktop 'BigWave Radio.lnk')
+          Start-Process $hub -ArgumentList '--repair-shortcuts' -Wait -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\sc-repair.txt"
+          Get-Content "$env:RUNNER_TEMP\sc-repair.txt"
+          foreach ($place in $programs, $desktop) { if (-not (Test-Path -LiteralPath (Join-Path $place 'BigWave Radio.lnk'))) { throw "repair didn't make the shortcut in $place" } }
+          # A shortcut the user deletes afterwards isn't put back (not on start, not on update).
+          Remove-Item (Join-Path $desktop 'BigWave Radio.lnk')
+          Start-Process $hub -ArgumentList '--repair-shortcuts' -Wait -NoNewWindow
+          Start-Process $hub -ArgumentList '--install', 'bigwave-radio' -Wait -NoNewWindow
+          if (Test-Path -LiteralPath (Join-Path $desktop 'BigWave Radio.lnk')) { throw "the deleted Desktop shortcut came back" }
+          if (-not (Test-Path -LiteralPath (Join-Path $programs 'BigWave Radio.lnk'))) { throw "the update lost the Start menu shortcut" }
+          foreach ($id in $apps.Keys) {
+            $p = Start-Process $hub -ArgumentList '--uninstall', $id -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\sc-rm-$id.txt"
+            Get-Content "$env:RUNNER_TEMP\sc-rm-$id.txt"
+            if ($p.ExitCode -ne 0) { throw "$id did not uninstall (exit $($p.ExitCode))" }
+            foreach ($place in $programs, $desktop) {
+              $lnk = Join-Path $place "$($apps[$id]).lnk"
+              if (Test-Path -LiteralPath $lnk) { throw "uninstall left $lnk behind" }
+            }
+          }
+          "shortcuts OK"
+
       - name: ChipWave Studio installed with its own setup is found and removed (publisher Del (postmanpat))
         env:
           GH_TOKEN: ${{ github.token }}

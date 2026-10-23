@@ -120,7 +120,9 @@ pub enum Phase {
 }
 
 /// Downloads, checks and installs `tag` of `spec`. `previous` is what's installed now, if anything.
-pub fn install(spec: &AppSpec, tag: &str, plan: &Plan, paths: &Paths, previous: Option<&Record>, cancel: &AtomicBool, report: &mut dyn FnMut(Phase)) -> Result<Record, String> {
+/// `shortcuts`: make Start menu and Desktop shortcuts for a Windows portable install (Settings).
+#[allow(clippy::too_many_arguments)]
+pub fn install(spec: &AppSpec, tag: &str, plan: &Plan, paths: &Paths, previous: Option<&Record>, shortcuts: bool, cancel: &AtomicBool, report: &mut dyn FnMut(Phase)) -> Result<Record, String> {
     if let Some(prev) = previous {
         if is_running(&prev.path) {
             return Err(format!("{} is open. Close it first, then try again.", spec.name));
@@ -166,7 +168,7 @@ pub fn install(spec: &AppSpec, tag: &str, plan: &Plan, paths: &Paths, previous: 
 
     report(Phase::Installing);
     let version = tag.trim_start_matches('v').to_string();
-    let record = |kind, path| Record { version: version.clone(), tag: tag.to_string(), kind, path, installed_at: now(), external: false };
+    let record = |kind, path| Record { version: version.clone(), tag: tag.to_string(), kind, path, installed_at: now(), external: false, shortcuts_done: false };
     let result = match plan {
         Plan::AppImage { .. } => install_appimage(spec, &part, paths).map(|p| record(Kind::AppImage, p)),
         Plan::Portable { exe, .. } => install_portable(spec, &part, exe, paths).map(|p| record(Kind::PortableZip, p)),
@@ -177,12 +179,35 @@ pub fn install(spec: &AppSpec, tag: &str, plan: &Plan, paths: &Paths, previous: 
         Plan::Unavailable(_) => unreachable!(),
     };
     let _ = std::fs::remove_file(&part);
+    let mut result = result;
+    if let Ok(new) = result.as_mut() {
+        if cfg!(windows) && new.kind == Kind::PortableZip {
+            let had = previous.is_some_and(|p| p.kind == Kind::PortableZip && p.shortcuts_done);
+            if had {
+                // Already made once: keep the ones still there pointing at the program, but
+                // don't bring back one the user deleted.
+                new.shortcuts_done = true;
+                if let Err(e) = create_shortcuts(spec, &new.path, true) {
+                    crate::links::log(&format!("couldn't update {}'s shortcuts: {e}", spec.name));
+                }
+            } else if shortcuts {
+                match create_shortcuts(spec, &new.path, false) {
+                    Ok(()) => new.shortcuts_done = true,
+                    Err(e) => crate::links::log(&format!("couldn't make {}'s shortcuts: {e}", spec.name)),
+                }
+            }
+        }
+    }
     if result.is_ok() {
         if let Some(prev) = previous {
             // Moving between AppImage/portable and the installer leaves the old copy behind;
             // tidy it if it was ours.
             if prev.kind != Kind::Installer && result.as_ref().is_ok_and(|r| r.kind == Kind::Installer) {
                 let _ = std::fs::remove_dir_all(paths.apps().join(&spec.id));
+                // The setup makes its own shortcuts; ours would now point at nothing.
+                if prev.kind == Kind::PortableZip {
+                    remove_shortcuts(spec, paths);
+                }
             }
             // The new version's .app has a new name (e.g. after an app is renamed): remove the
             // old bundle Wave Hub put in Applications, so there aren't two copies.
@@ -292,6 +317,142 @@ fn install_portable(spec: &AppSpec, zip_path: &Path, exe_names: &[String], paths
     }
     let _ = std::fs::remove_dir_all(&old);
     Ok(dir.join(exe))
+}
+
+// --- Windows: Start menu and Desktop shortcuts for portable installs -------------------------
+//
+// Made with Windows' own WScript.Shell through PowerShell (no extra crates). Per-user places
+// only: Start menu = %APPDATA%\Microsoft\Windows\Start Menu\Programs, Desktop = wherever the
+// user's Desktop really is (it may be in OneDrive), so no admin rights are needed.
+
+/// `ChipWave Studio.lnk` (characters Windows doesn't allow in file names are dropped).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn shortcut_file_name(spec: &AppSpec) -> String {
+    let name: String = spec.name.chars().filter(|c| !matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') && !c.is_control()).collect();
+    format!("{}.lnk", name.trim().trim_end_matches('.'))
+}
+
+/// A PowerShell single-quoted string: `'` is written twice.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+const SHORTCUT_PLACES: &str = "$places = @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop')) | Where-Object { $_ }";
+
+/// The PowerShell that makes (or, with `only_existing`, just refreshes) both shortcuts.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn create_shortcuts_script(spec: &AppSpec, exe: &Path, only_existing: bool) -> String {
+    let exe_s = exe.to_string_lossy();
+    let dir = exe.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    let desc = format!("{} (installed by Wave Hub)", spec.name);
+    format!(
+        "$ErrorActionPreference = 'Stop'\n\
+         $exe = {exe}; $dir = {dir}; $file = {file}; $desc = {desc}; $onlyExisting = ${only}\n\
+         {places}\n\
+         $sh = New-Object -ComObject WScript.Shell\n\
+         foreach ($p in $places) {{\n\
+           $lnk = Join-Path $p $file\n\
+           if ($onlyExisting -and -not (Test-Path -LiteralPath $lnk)) {{ continue }}\n\
+           if (-not (Test-Path -LiteralPath $p)) {{ New-Item -ItemType Directory -Force -Path $p | Out-Null }}\n\
+           $s = $sh.CreateShortcut($lnk)\n\
+           $s.TargetPath = $exe; $s.WorkingDirectory = $dir; $s.IconLocation = $exe + ',0'; $s.Description = $desc\n\
+           $s.Save()\n\
+         }}\n",
+        exe = ps_quote(&exe_s),
+        dir = ps_quote(&dir),
+        file = ps_quote(&shortcut_file_name(spec)),
+        desc = ps_quote(&desc),
+        only = if only_existing { "true" } else { "false" },
+        places = SHORTCUT_PLACES,
+    )
+}
+
+/// The PowerShell that deletes both shortcuts, but only if they point into Wave Hub's apps folder
+/// (a shortcut the app's own setup made, or the user's, is left alone).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn remove_shortcuts_script(spec: &AppSpec, paths: &Paths) -> String {
+    let apps = paths.apps().to_string_lossy().trim_end_matches(['\\', '/']).to_string() + "\\";
+    format!(
+        "$ErrorActionPreference = 'Stop'\n\
+         $file = {file}; $apps = {apps}\n\
+         {places}\n\
+         $sh = New-Object -ComObject WScript.Shell\n\
+         foreach ($p in $places) {{\n\
+           $lnk = Join-Path $p $file\n\
+           if (-not (Test-Path -LiteralPath $lnk)) {{ continue }}\n\
+           $t = $sh.CreateShortcut($lnk).TargetPath\n\
+           if ($t -and $t.StartsWith($apps, [StringComparison]::OrdinalIgnoreCase)) {{ Remove-Item -LiteralPath $lnk -Force }}\n\
+         }}\n",
+        file = ps_quote(&shortcut_file_name(spec)),
+        apps = ps_quote(&apps),
+        places = SHORTCUT_PLACES,
+    )
+}
+
+#[cfg(windows)]
+fn run_powershell(script: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .stdin(Stdio::null())
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .output()
+        .map_err(|e| format!("couldn't start PowerShell ({e})"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// Makes `<name>.lnk` in the user's Start menu and on their Desktop, starting `exe` in its own
+/// folder with its own icon. `only_existing`: just point the ones still there at `exe`.
+#[cfg(windows)]
+pub fn create_shortcuts(spec: &AppSpec, exe: &Path, only_existing: bool) -> Result<(), String> {
+    run_powershell(&create_shortcuts_script(spec, exe, only_existing))
+}
+
+#[cfg(not(windows))]
+pub fn create_shortcuts(_spec: &AppSpec, _exe: &Path, _only_existing: bool) -> Result<(), String> {
+    Ok(())
+}
+
+/// Removes the shortcuts [`create_shortcuts`] made. Failures are only logged.
+#[cfg(windows)]
+pub fn remove_shortcuts(spec: &AppSpec, paths: &Paths) {
+    if let Err(e) = run_powershell(&remove_shortcuts_script(spec, paths)) {
+        crate::links::log(&format!("couldn't remove {}'s shortcuts: {e}", spec.name));
+    }
+}
+
+#[cfg(not(windows))]
+pub fn remove_shortcuts(_spec: &AppSpec, _paths: &Paths) {}
+
+/// Portable installs made before Wave Hub made shortcuts (0.2.6 and older): make them once.
+/// Returns whether any record changed (save `installed.json` then).
+pub fn repair_shortcuts(apps: &[AppSpec], installed: &mut crate::store::Installed) -> bool {
+    let mut changed = false;
+    if !cfg!(windows) {
+        return false;
+    }
+    for spec in apps {
+        let Some(r) = installed.apps.get_mut(&spec.id) else {
+            continue;
+        };
+        if r.kind != Kind::PortableZip || r.external || r.shortcuts_done || !r.path.is_file() {
+            continue;
+        }
+        match create_shortcuts(spec, &r.path, false) {
+            Ok(()) => {
+                r.shortcuts_done = true;
+                changed = true;
+            }
+            Err(e) => crate::links::log(&format!("couldn't make {}'s shortcuts: {e}", spec.name)),
+        }
+    }
+    changed
 }
 
 /// `X.app/Contents/MacOS/X` for the first `.app` in `dir` (or one folder down), from its
@@ -626,6 +787,28 @@ mod tests {
             assert!(!staging.exists());
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shortcut_scripts() {
+        let mut m: crate::manifest::Manifest = serde_json::from_str(include_str!("../apps.json")).unwrap();
+        let spec = m.apps.iter_mut().find(|a| a.id == "chipwave-tracker").unwrap();
+        assert_eq!(super::shortcut_file_name(spec), "ChipWave Studio.lnk");
+        spec.name = "Del's: App?".into();
+        assert_eq!(super::shortcut_file_name(spec), "Del's App.lnk");
+        let exe = std::path::Path::new("C:/Users/O'Brien/AppData/Local/WaveHub/apps/chipwave-tracker/ChipWave.exe");
+        let s = super::create_shortcuts_script(spec, exe, false);
+        assert!(s.contains("$exe = 'C:/Users/O''Brien/AppData/Local/WaveHub/apps/chipwave-tracker/ChipWave.exe'"), "{s}");
+        assert!(s.contains("$dir = 'C:/Users/O''Brien/AppData/Local/WaveHub/apps/chipwave-tracker'"), "{s}");
+        assert!(s.contains("$file = 'Del''s App.lnk'"), "{s}");
+        assert!(s.contains("$onlyExisting = $false"));
+        assert!(s.contains("GetFolderPath('Desktop')") && s.contains("GetFolderPath('Programs')"));
+        assert!(!s.contains('"'), "no double quotes, so the command line needs no escaping");
+        assert!(super::create_shortcuts_script(spec, exe, true).contains("$onlyExisting = $true"));
+        let paths = crate::store::Paths { data: std::path::PathBuf::from("C:/x/WaveHub") };
+        let r = super::remove_shortcuts_script(spec, &paths);
+        assert!(r.contains("$apps = 'C:/x/WaveHub/apps\\'"), "{r}");
+        assert!(!r.contains('"'));
     }
 
     #[test]

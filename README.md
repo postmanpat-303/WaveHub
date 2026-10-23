@@ -39,7 +39,7 @@ version comes out, click **Update**. That's it. No account, no ads, no tracking.
 - **Checks every download** against the app's published `SHA256SUMS.txt` before installing it.
 - **Never replaces an app while it's open.** Close it and click **Retry**.
 - **No admin password needed:** apps go into your own user folder.
-  - Windows: `%LOCALAPPDATA%\WaveHub\apps`, using each app's portable version.
+  - Windows: `%LOCALAPPDATA%\WaveHub\apps`, using each app's portable version, with Start menu and Desktop shortcuts (Settings can turn these off).
     StreamWave only comes with an installer, so Wave Hub runs it quietly in the background.
   - Linux: `~/.local/share/WaveHub/apps`, using each app's AppImage.
 - **Uninstall** any app from its card's **•••** menu, after a "Remove StreamWave? Your settings

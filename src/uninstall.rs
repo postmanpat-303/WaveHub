@@ -41,7 +41,11 @@ pub fn uninstall(spec: &AppSpec, record: &Record, paths: &Paths) -> Result<(), S
             if let Some(app) = app_bundle(&record.path).filter(|a| !a.starts_with(paths.apps())) {
                 remove_folder(&app, spec)?;
             }
-            remove_folder(&install::app_dir(spec, paths), spec)
+            remove_folder(&install::app_dir(spec, paths), spec)?;
+            if record.kind == Kind::PortableZip {
+                install::remove_shortcuts(spec, paths);
+            }
+            Ok(())
         }
         Kind::Installer => run_uninstaller(spec, record),
         Kind::SystemPackage => remove_package(spec, &record.path),
@@ -300,7 +304,7 @@ pub fn check_files(spec: &AppSpec, record: &Record, paths: &Paths) -> Files {
 
 /// A copy of the app on this computer that Wave Hub didn't install, if there is one.
 pub fn find_external(spec: &AppSpec) -> Option<Record> {
-    let record = |kind, path: PathBuf, version: String| Record { version, tag: String::new(), kind, path, installed_at: now(), external: true };
+    let record = |kind, path: PathBuf, version: String| Record { version, tag: String::new(), kind, path, installed_at: now(), external: true, shortcuts_done: false };
     if cfg!(windows) {
         let w = spec.windows.as_ref()?;
         let key = w.uninstall_key.iter().find_map(|k| uninstall_key(k));
@@ -399,7 +403,7 @@ mod tests {
         let dir = install::app_dir(spec, &paths);
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("StreamWave.AppImage");
-        let rec = Record { version: "0.6.0".into(), tag: "v0.6.0".into(), kind: Kind::AppImage, path: exe.clone(), installed_at: 0, external: false };
+        let rec = Record { version: "0.6.0".into(), tag: "v0.6.0".into(), kind: Kind::AppImage, path: exe.clone(), installed_at: 0, external: false, shortcuts_done: false };
         std::fs::write(&exe, b"x").unwrap();
         assert_eq!(check_files(spec, &rec, &paths), Files::Ok);
         // Quarantined: the file went, its folder didn't.

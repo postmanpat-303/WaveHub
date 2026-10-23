@@ -66,12 +66,13 @@ fn main() -> eframe::Result<()> {
                 std::process::exit(1);
             }
         };
-        let prefer_installer = store::Settings::load(&paths).prefer_installer || previous.as_ref().is_some_and(|r| r.kind == store::Kind::Installer);
+        let settings = store::Settings::load(&paths);
+        let prefer_installer = settings.prefer_installer || previous.as_ref().is_some_and(|r| r.kind == store::Kind::Installer);
         let plan = install::plan(spec, prefer_installer);
         let _ = writeln!(out, "Installing {} {tag} ({:?})…", spec.name, plan.files());
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let mut last = String::new();
-        match install::install(spec, &tag, &plan, &paths, previous.as_ref(), &cancel, &mut |phase| {
+        match install::install(spec, &tag, &plan, &paths, previous.as_ref(), settings.shortcuts, &cancel, &mut |phase| {
             let name = format!("{phase:?}").split([' ', '{']).next().unwrap_or_default().to_string();
             if name != last {
                 eprintln!("  {name}");
@@ -89,6 +90,20 @@ fn main() -> eframe::Result<()> {
                 std::process::exit(1);
             }
         }
+    }
+    if args.iter().any(|a| a == "--repair-shortcuts") {
+        // What Wave Hub does when it starts: make shortcuts for portable installs from before
+        // it made them (used by the Windows CI check).
+        let paths = store::Paths::new();
+        let manifest = manifest::load(&paths.data);
+        let mut installed = store::Installed::load(&paths);
+        if store::Settings::load(&paths).shortcuts && install::repair_shortcuts(&manifest.apps, &mut installed) {
+            let _ = installed.save(&paths);
+            let _ = writeln!(out, "Made the missing shortcuts.");
+        } else {
+            let _ = writeln!(out, "No shortcuts to make.");
+        }
+        return Ok(());
     }
     if args.iter().any(|a| a == "--list-apps" || a == "--uninstall") {
         // What's installed (by Wave Hub or found on this computer), and removing one.
