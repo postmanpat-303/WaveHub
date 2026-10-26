@@ -51,7 +51,6 @@
       "id": "chipwave-tracker",
       "name": "ChipWave Studio",
       "description": "A modern OctaMED-inspired music tracker.",
-      "notice": "New name! Formerly ChipWave Tracker. Same app, same files, nothing to do.",
       "repo": "postmanpat-303/ChipWaveStudio",
       "icon": "chipwave_tracker",
       "accent": [
