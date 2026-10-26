@@ -1,5 +1,8 @@
 ; Wave Hub - Windows x64 setup (NSIS 3, cross-built with makensis on Linux)
-; Per-user install: %LOCALAPPDATA%\Programs\Wave Hub, Start menu shortcut, no admin needed.
+; Per-machine install: C:\Program Files\Wave Hub, Start menu shortcut, desktop shortcut.
+; 0.2.x installed per-user (%LOCALAPPDATA%\Programs\Wave Hub): an old copy there is removed
+; on upgrade, and its HKCU registry entries and shortcuts with it. What Wave Hub installed for
+; you and its settings (%LOCALAPPDATA%\WaveHub) are data, and stay.
 ; Build: scripts/package-windows.sh 0.2.0
 ; Silent install: WaveHub-<ver>-setup-x64.exe /S     Silent uninstall: Uninstall.exe /S
 Unicode true
@@ -23,14 +26,17 @@ Unicode true
 !define APPNAME "Wave Hub"
 !define EXE "WaveHub.exe"
 !define PUBLISHER "Del (postmanpat)"
+!define REGKEY "Software\WaveHub"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub"
 !define ICON "..\assets\icons\wavehub.ico"
+; Where 0.2.x put a per-user copy
+!define OLDUSERDIR "$LOCALAPPDATA\Programs\${APPNAME}"
 
 Name "${APPNAME} ${VERSION}"
 OutFile "${OUTFILE}"
-InstallDir "$LOCALAPPDATA\Programs\${APPNAME}"
-InstallDirRegKey HKCU "Software\WaveHub" "InstallDir"
-RequestExecutionLevel user
+InstallDir "$PROGRAMFILES64\${APPNAME}"
+InstallDirRegKey HKLM "${REGKEY}" "InstallDir"
+RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 BrandingText "${APPNAME} ${VERSION} - free for Windows and Linux"
 
@@ -51,7 +57,7 @@ VIAddVersionKey "CompanyName" "${PUBLISHER}"
 !define MUI_HEADERIMAGE_BITMAP "header.bmp"
 !define MUI_HEADERIMAGE_UNBITMAP "header.bmp"
 !define MUI_ABORTWARNING
-!define MUI_WELCOMEPAGE_TEXT "Wave Hub installs, updates and opens the Wave apps: BigWave Radio, ChipWave Studio and StreamWave.$\r$\n$\r$\nIt's free, and it installs just for you, so no administrator password is needed.$\r$\n$\r$\nClick Next to continue."
+!define MUI_WELCOMEPAGE_TEXT "Wave Hub installs, updates and opens the Wave apps: BigWave Radio, ChipWave Studio and StreamWave.$\r$\n$\r$\nIt's free. It installs for everyone on this PC, so Windows asks for an administrator password.$\r$\n$\r$\nClick Next to continue."
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${EXE}"
 !define MUI_FINISHPAGE_RUN_TEXT "Start Wave Hub"
 
@@ -85,17 +91,55 @@ FunctionEnd
 !insertmacro CLOSE_RUNNING ""
 !insertmacro CLOSE_RUNNING "un."
 
+; Remove the per-user copy 0.2.x installed, so there is only one Wave Hub.
+; Data (%LOCALAPPDATA%\WaveHub: the apps it installed, its settings) is left alone.
+Function RemoveOldUserInstall
+  ; old per-user shortcuts
+  SetShellVarContext current
+  Delete "$DESKTOP\${APPNAME}.lnk"
+  Delete "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk"
+  Delete "$SMPROGRAMS\${APPNAME}\Uninstall ${APPNAME}.lnk"
+  RMDir "$SMPROGRAMS\${APPNAME}"
+  SetShellVarContext all
+
+  ReadRegStr $0 HKCU "${REGKEY}" "InstallDir"
+  ${If} $0 == ""
+    StrCpy $0 "${OLDUSERDIR}"
+  ${EndIf}
+  ${If} $0 == "$INSTDIR"
+    Return
+  ${EndIf}
+  ${IfNot} ${FileExists} "$0\${EXE}"
+    Return
+  ${EndIf}
+  Delete "$0\${EXE}"
+  Delete "$0\README.txt"
+  Delete "$0\LICENSE.txt"
+  Delete "$0\OFL-Poppins.txt"
+  Delete "$0\Uninstall.exe"
+  RMDir "$0"
+  DeleteRegKey HKCU "${UNINSTKEY}"
+  DeleteRegKey HKCU "${REGKEY}"
+FunctionEnd
+
 Function .onInit
   ${IfNot} ${RunningX64}
     MessageBox MB_ICONSTOP "Wave Hub needs 64-bit Windows." /SD IDOK
     Abort
   ${EndIf}
-  SetShellVarContext current
+  SetRegView 64
+  SetShellVarContext all
   Call CloseRunning
+  ; InstallDirRegKey ran before SetRegView 64: read the 64-bit key again
+  ReadRegStr $0 HKLM "${REGKEY}" "InstallDir"
+  ${If} $0 != ""
+    StrCpy $INSTDIR $0
+  ${EndIf}
 FunctionEnd
 
 Function un.onInit
-  SetShellVarContext current
+  SetRegView 64
+  SetShellVarContext all
   Call un.CloseRunning
 FunctionEnd
 
@@ -105,6 +149,8 @@ FunctionEnd
 
 Section "Wave Hub (required)" SecCore
   SectionIn RO
+  SetShellVarContext all
+  Call RemoveOldUserInstall
   SetOutPath "$INSTDIR"
   SetOverwrite on
   File "${PKGDIR}\${EXE}"
@@ -118,21 +164,22 @@ Section "Wave Hub (required)" SecCore
   CreateShortcut "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk" "$INSTDIR\${EXE}" "" "$INSTDIR\${EXE}" 0
   CreateShortcut "$SMPROGRAMS\${APPNAME}\Uninstall ${APPNAME}.lnk" "$INSTDIR\Uninstall.exe" "" "$INSTDIR\${EXE}" 0
 
-  WriteRegStr HKCU "Software\WaveHub" "InstallDir" "$INSTDIR"
-  WriteRegStr HKCU "${UNINSTKEY}" "DisplayName" "${APPNAME}"
-  WriteRegStr HKCU "${UNINSTKEY}" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "${UNINSTKEY}" "Publisher" "${PUBLISHER}"
-  WriteRegStr HKCU "${UNINSTKEY}" "DisplayIcon" "$INSTDIR\${EXE},0"
-  WriteRegStr HKCU "${UNINSTKEY}" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "${UNINSTKEY}" "URLInfoAbout" "https://github.com/postmanpat-303/WaveHub"
-  WriteRegStr HKCU "${UNINSTKEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
-  WriteRegStr HKCU "${UNINSTKEY}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
-  WriteRegDWORD HKCU "${UNINSTKEY}" "NoModify" 1
-  WriteRegDWORD HKCU "${UNINSTKEY}" "NoRepair" 1
+  WriteRegStr HKLM "${REGKEY}" "InstallDir" "$INSTDIR"
+  WriteRegStr HKLM "${UNINSTKEY}" "DisplayName" "${APPNAME}"
+  WriteRegStr HKLM "${UNINSTKEY}" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKLM "${UNINSTKEY}" "Publisher" "${PUBLISHER}"
+  WriteRegStr HKLM "${UNINSTKEY}" "DisplayIcon" "$INSTDIR\${EXE},0"
+  WriteRegStr HKLM "${UNINSTKEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKLM "${UNINSTKEY}" "URLInfoAbout" "https://github.com/postmanpat-303/WaveHub"
+  WriteRegStr HKLM "${UNINSTKEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+  WriteRegStr HKLM "${UNINSTKEY}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
+  WriteRegDWORD HKLM "${UNINSTKEY}" "NoModify" 1
+  WriteRegDWORD HKLM "${UNINSTKEY}" "NoRepair" 1
   !insertmacro REFRESH_SHELL_ICONS
 SectionEnd
 
 Section "Desktop shortcut" SecDesktop
+  SetShellVarContext all
   Delete "$DESKTOP\${APPNAME}.lnk"
   CreateShortcut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\${EXE}" "" "$INSTDIR\${EXE}" 0
   !insertmacro REFRESH_SHELL_ICONS
@@ -144,6 +191,7 @@ SectionEnd
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 Section "Uninstall"
+  SetShellVarContext all
   Delete "$DESKTOP\${APPNAME}.lnk"
   Delete "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk"
   Delete "$SMPROGRAMS\${APPNAME}\Uninstall ${APPNAME}.lnk"
@@ -154,8 +202,32 @@ Section "Uninstall"
   Delete "$INSTDIR\OFL-Poppins.txt"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
-  DeleteRegKey HKCU "${UNINSTKEY}"
-  DeleteRegKey HKCU "Software\WaveHub"
+  DeleteRegKey HKLM "${UNINSTKEY}"
+  DeleteRegKey HKLM "${REGKEY}"
+
+  ; a per-user 0.2.x copy, if this install did not get the chance to remove it
+  SetShellVarContext current
+  Delete "$DESKTOP\${APPNAME}.lnk"
+  Delete "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk"
+  Delete "$SMPROGRAMS\${APPNAME}\Uninstall ${APPNAME}.lnk"
+  RMDir "$SMPROGRAMS\${APPNAME}"
+  SetShellVarContext all
+  ReadRegStr $0 HKCU "${REGKEY}" "InstallDir"
+  ${If} $0 == ""
+    StrCpy $0 "${OLDUSERDIR}"
+  ${EndIf}
+  ${If} $0 != "$INSTDIR"
+    ${If} ${FileExists} "$0\${EXE}"
+      Delete "$0\${EXE}"
+      Delete "$0\README.txt"
+      Delete "$0\LICENSE.txt"
+      Delete "$0\OFL-Poppins.txt"
+      Delete "$0\Uninstall.exe"
+      RMDir "$0"
+    ${EndIf}
+    DeleteRegKey HKCU "${UNINSTKEY}"
+    DeleteRegKey HKCU "${REGKEY}"
+  ${EndIf}
   !insertmacro REFRESH_SHELL_ICONS
   ; The apps Wave Hub installed and its settings (%LOCALAPPDATA%\WaveHub) are left alone.
 SectionEnd

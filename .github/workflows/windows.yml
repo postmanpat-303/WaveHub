@@ -2,7 +2,7 @@ name: Windows
 
 # Windows x64 with Microsoft's toolchain (x86_64-pc-windows-msvc), C runtime linked in
 # (+crt-static), so WaveHub.exe needs no extra DLLs. Produces:
-#   WaveHub-<v>-setup-x64.exe     NSIS per-user setup (installer/wavehub.nsi)
+#   WaveHub-<v>-setup-x64.exe     NSIS per-machine setup (installer/wavehub.nsi)
 #   WaveHub-<v>-windows-x64.zip   portable
 #   WaveHub.exe                   the bare program, for 0.1.0's update link
 # Run it by hand (Actions > Windows > Run workflow). With release_tag set, the files are
@@ -89,10 +89,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "an icon has PNG small frames" }
           $p = Start-Process "dist\v$v\WaveHub-$v-setup-x64.exe" -ArgumentList '/S' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "setup exit $($p.ExitCode)" }
-          $dir = "$env:LOCALAPPDATA\Programs\Wave Hub"
+          $dir = "$env:ProgramFiles\Wave Hub"
           python scripts/check-ico.py "$dir\WaveHub.exe" "$dir\Uninstall.exe"
           if ($LASTEXITCODE -ne 0) { throw "an installed icon has PNG small frames" }
-          (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub').DisplayIcon
+          (Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub').DisplayIcon
 
       - name: Explorer screenshot of the downloads (information only)
         continue-on-error: true
@@ -100,7 +100,7 @@ jobs:
           $v = "${{ steps.ver.outputs.ver }}"
           $show = Join-Path $env:RUNNER_TEMP 'icons'
           New-Item -ItemType Directory -Force $show | Out-Null
-          Copy-Item "dist\v$v\WaveHub.exe", "dist\v$v\WaveHub-$v-setup-x64.exe", "$env:LOCALAPPDATA\Programs\Wave Hub\Uninstall.exe" $show
+          Copy-Item "dist\v$v\WaveHub.exe", "dist\v$v\WaveHub-$v-setup-x64.exe", "$env:ProgramFiles\Wave Hub\Uninstall.exe" $show
           # Medium icons in this folder: Explorer reads the 48 px frame; the details pane uses 16 px.
           $shell = New-Object -ComObject Shell.Application
           Start-Process explorer.exe $show
@@ -117,7 +117,7 @@ jobs:
           Start-Sleep 3
           $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
           $bmp.Save("$env:RUNNER_TEMP\explorer-details.png")
-          Start-Process "$env:LOCALAPPDATA\Programs\Wave Hub\Uninstall.exe" -ArgumentList '/S' -Wait
+          Start-Process "$env:ProgramFiles\Wave Hub\Uninstall.exe" -ArgumentList '/S' -Wait
           Start-Sleep 4
 
       - name: Smoke test the portable zip (exe alone, no DLLs next to it)
@@ -151,15 +151,15 @@ jobs:
           if ($seen -notlike 'wavehub-test://check/discussions?a=1&b=2*') { throw "the link arrived changed: $seen" }
           Remove-Item -Recurse $k
 
-      - name: Smoke test the setup (silent per-user install, launch, uninstall)
+      - name: Smoke test the setup (silent per-machine install, launch, uninstall)
         run: |
           $v = "${{ steps.ver.outputs.ver }}"
           $p = Start-Process "dist\v$v\WaveHub-$v-setup-x64.exe" -ArgumentList '/S' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "setup exit $($p.ExitCode)" }
-          $dir = "$env:LOCALAPPDATA\Programs\Wave Hub"
+          $dir = "$env:ProgramFiles\Wave Hub"
           Get-ChildItem $dir | Format-Table Name, Length
-          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Wave Hub\Wave Hub.lnk")) { throw "no Start menu shortcut" }
-          Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub' | Format-List DisplayName, DisplayVersion, Publisher, DisplayIcon
+          if (-not (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Wave Hub\Wave Hub.lnk")) { throw "no Start menu shortcut" }
+          Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub' | Format-List DisplayName, DisplayVersion, Publisher, DisplayIcon
           Start-Process "$dir\WaveHub.exe" -ArgumentList '--update-info' -Wait -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\info2.txt"
           Get-Content "$env:RUNNER_TEMP\info2.txt"
           if (-not (Select-String "$env:RUNNER_TEMP\info2.txt" -Pattern 'installed as: Windows setup' -Quiet)) { throw "setup not detected" }
@@ -290,20 +290,27 @@ jobs:
           gh release download v0.2.5 -R postmanpat-303/WaveHub --pattern 'WaveHub-0.2.5-setup-x64.exe' -O $old
           $p = Start-Process $old -ArgumentList '/S' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "0.2.5 setup exit $($p.ExitCode)" }
-          $dir = "$env:LOCALAPPDATA\Programs\Wave Hub"
-          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub'
-          Get-ItemProperty $key | Format-List DisplayName, DisplayVersion, Publisher
-          $p = Start-Process "$dir\WaveHub.exe" -ArgumentList '--install', 'bigwave-radio' -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\up-install.txt"
+          # 0.2.5 installed per-user, so run that copy first
+          $oldDir = "$env:LOCALAPPDATA\Programs\Wave Hub"
+          $oldKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub'
+          if (-not (Test-Path "$oldDir\WaveHub.exe")) { throw "0.2.5 did not install per-user as expected" }
+          Get-ItemProperty $oldKey | Format-List DisplayName, DisplayVersion, Publisher
+          $p = Start-Process "$oldDir\WaveHub.exe" -ArgumentList '--install', 'bigwave-radio' -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\up-install.txt"
           Get-Content "$env:RUNNER_TEMP\up-install.txt"
           if ($p.ExitCode -ne 0) { throw "0.2.5 could not install BigWave Radio" }
+          $dir = "$env:ProgramFiles\Wave Hub"
+          $key = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub'
           $p = Start-Process "dist\v$v\WaveHub-$v-setup-x64.exe" -ArgumentList '/S' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "$v setup exit $($p.ExitCode)" }
           $e = Get-ItemProperty $key
           $e | Format-List DisplayName, DisplayVersion, Publisher, UninstallString
           if ($e.DisplayVersion -ne $v) { throw "uninstall entry still says $($e.DisplayVersion)" }
           if ($e.Publisher -ne 'Del (postmanpat)') { throw "publisher is $($e.Publisher)" }
-          $entries = @(Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'Wave Hub' })
+          $entries = @(Get-ChildItem 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'Wave Hub' })
           if ($entries.Count -ne 1) { throw "expected one Wave Hub uninstall entry, found $($entries.Count)" }
+          $leftover = @(Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'Wave Hub' })
+          if ($leftover.Count -ne 0) { throw "the old per-user uninstall entry is still there" }
+          if (Test-Path "$env:LOCALAPPDATA\Programs\Wave Hub") { throw "the old per-user folder is still there" }
           Start-Process "$dir\WaveHub.exe" -ArgumentList '--version' -Wait -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\up-ver.txt"
           Get-Content "$env:RUNNER_TEMP\up-ver.txt"
           if (-not (Select-String "$env:RUNNER_TEMP\up-ver.txt" -Pattern $v -SimpleMatch -Quiet)) { throw "the installed program is not $v" }

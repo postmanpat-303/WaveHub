@@ -44,10 +44,10 @@ sudo apt-get purge -y -q wave-hub >/dev/null 2>&1; ! command -v wave-hub >/dev/n
 # Windows under Wine (skipped until the Windows files are in the folder)
 if [ -f "WaveHub-$VER-setup-x64.exe" ]; then
 export WINEPREFIX="${WINEPREFIX:-/tmp/wh/wineprefix}" WINEDEBUG=-all
-I="$WINEPREFIX/drive_c/users/$USER/AppData/Local/Programs/Wave Hub"
-timeout 120 wine "WaveHub-$VER-setup-x64.exe" /S && test -f "$I/WaveHub.exe" && ok "setup /S installs per-user to %LOCALAPPDATA%\\Programs\\Wave Hub"
-test -f "$WINEPREFIX/drive_c/users/$USER/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Wave Hub/Wave Hub.lnk" && ok "Start menu shortcut"
-wine reg query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub' /v DisplayVersion 2>/dev/null | grep -q "$VER" && ok "Apps & features entry (HKCU)"
+I="$WINEPREFIX/drive_c/Program Files/Wave Hub"
+timeout 120 wine "WaveHub-$VER-setup-x64.exe" /S && test -f "$I/WaveHub.exe" && ok "setup /S installs per-machine to C:\\Program Files\\Wave Hub"
+test -f "$WINEPREFIX/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/Wave Hub/Wave Hub.lnk" && ok "Start menu shortcut"
+wine reg query 'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\WaveHub' /v DisplayVersion 2>/dev/null | grep -q "$VER" && ok "Apps & features entry (HKLM)"
 timeout 30 wine "$I/WaveHub.exe" --update-info 2>/dev/null | tr -d '\r' | grep -q "installed as: Windows setup" && ok "installed copy detected as Windows setup"
 timeout 60 wine "$I/Uninstall.exe" /S; sleep 4; test ! -e "$I" && ok "uninstaller removes it"
 T=$(mktemp -d); (cd "$T" && unzip -q "$D/WaveHub-$VER-windows-x64.zip")

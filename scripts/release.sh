@@ -5,7 +5,7 @@
 # `scripts/release.sh --sums-only`. WINDOWS_LOCAL=1 also makes a MinGW Windows build here
 # (for testing only).
 #
-#   WaveHub-<v>-setup-x64.exe           Windows setup (per-user, no admin)
+#   WaveHub-<v>-setup-x64.exe           Windows setup (per-machine, admin)
 #   WaveHub-<v>-windows-x64.zip         Windows portable
 #   WaveHub-<v>-linux-<arch>.AppImage   x86_64 and aarch64
 #   WaveHub-<v>-linux-<arch>.deb

@@ -79,7 +79,7 @@ Pick the file for your computer:
 
 | Your computer | Download | Then |
 | --- | --- | --- |
-| **Windows** (10 and later, 64-bit) | `WaveHub-<version>-setup-x64.exe` | Run it. It installs just for you (no admin password) and adds Wave Hub to the Start menu. |
+| **Windows** (10 and later, 64-bit) | `WaveHub-<version>-setup-x64.exe` | Run it. It installs for everyone on the PC (Windows asks for an administrator password) and adds Wave Hub to the Start menu. |
 | Windows, no install | `WaveHub-<version>-windows-x64.zip` | Unzip it anywhere and double-click `WaveHub.exe`. |
 | **Ubuntu, Debian, Mint, Pop!_OS** | `WaveHub-<version>-linux-x86_64.deb` | Double-click it, or `sudo apt install ./WaveHub-*.deb` |
 | **Fedora, openSUSE** | `WaveHub-<version>-linux-x86_64.rpm` | `sudo dnf install ./WaveHub-*.rpm` |

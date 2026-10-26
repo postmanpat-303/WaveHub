@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Windows x64, cross-built on Linux with mingw-w64:
 #   dist/v<ver>/WaveHub-<ver>-windows-x64.zip   portable: WaveHub.exe + README + licences
-#   dist/v<ver>/WaveHub-<ver>-setup-x64.exe     NSIS per-user setup (installer/wavehub.nsi)
+#   dist/v<ver>/WaveHub-<ver>-setup-x64.exe     NSIS per-machine setup (installer/wavehub.nsi)
 # Needs: rustup target add x86_64-pc-windows-gnu, mingw-w64, nsis, zip.
 # Usage: scripts/package-windows.sh 0.2.0
 set -euo pipefail
