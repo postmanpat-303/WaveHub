@@ -57,7 +57,7 @@ modules:
           -e 's|<launchable type="desktop-id">wave-hub.desktop</launchable>|<launchable type="desktop-id">io.github.postmanpat_303.WaveHub.desktop</launchable>|'
           /app/share/metainfo/io.github.postmanpat_303.WaveHub.metainfo.xml
       - |-
-          for s in 16 32 48 64 128 256 512 1024; do
+          for s in 16 32 48 64 128 256 512; do
             install -Dm644 "assets/icons/wavehub_${s}.png" \
               "/app/share/icons/hicolor/${s}x${s}/apps/io.github.postmanpat_303.WaveHub.png"
           done
