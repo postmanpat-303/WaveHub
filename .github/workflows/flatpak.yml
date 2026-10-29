@@ -48,17 +48,29 @@ jobs:
         run: |
           MANIFEST=packaging/flatpak/io.github.postmanpat_303.WaveHub.yml
           flatpak-builder --user --force-clean --repo=repo build-dir "$MANIFEST"
+          VER="${{ steps.ver.outputs.ver }}"
           flatpak build-bundle --arch=x86_64 repo \
-            "WaveHub-${{ steps.ver.outputs.ver }}-linux-x86_64.flatpak" \
-            io.github.postmanpat_303.WaveHub
+            "WaveHub-$VER-linux-x86_64.flatpak" io.github.postmanpat_303.WaveHub
+          # The versionless copy is what the website's "latest" link points at.
+          cp "WaveHub-$VER-linux-x86_64.flatpak" "WaveHub-linux-x86_64.flatpak"
 
-      - name: Attach to the release
+      - name: Attach to the release and update SHA256SUMS.txt
         if: inputs.release_tag != ''
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
         run: |
-          gh release upload "${{ inputs.release_tag }}" \
-            "WaveHub-${{ steps.ver.outputs.ver }}-linux-x86_64.flatpak" --clobber
+          VER=${{ steps.ver.outputs.ver }}
+          test "$TAG" = "v$VER" || { echo "tag $TAG does not match Cargo version $VER"; exit 1; }
+          F="WaveHub-$VER-linux-x86_64.flatpak WaveHub-linux-x86_64.flatpak"
+          gh release upload "$TAG" --clobber $F
+          gh release download "$TAG" --pattern SHA256SUMS.txt --clobber
+          grep -v -E ' (WaveHub-[^ ]*-linux-x86_64\.flatpak|WaveHub-linux-x86_64\.flatpak)$' SHA256SUMS.txt > sums.new || true
+          sha256sum $F >> sums.new
+          sort -k2 sums.new > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$TAG" --clobber SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:

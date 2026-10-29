@@ -77,6 +77,7 @@ way too.
 Quick downloads (always the newest version):
 **[Windows setup](https://github.com/postmanpat-303/WaveHub/releases/latest/download/WaveHub-setup-x64.exe)** ·
 **[Linux AppImage](https://github.com/postmanpat-303/WaveHub/releases/latest/download/WaveHub-linux-x86_64.AppImage)** ([ARM64](https://github.com/postmanpat-303/WaveHub/releases/latest/download/WaveHub-linux-aarch64.AppImage)) ·
+**[Flatpak](https://github.com/postmanpat-303/WaveHub/releases/latest/download/WaveHub-linux-x86_64.flatpak)** ·
 **[Mac dmg](https://github.com/postmanpat-303/WaveHub/releases/latest/download/WaveHub-macos-universal.dmg)**
 
 Every other file is on the **[latest release page](https://github.com/postmanpat-303/WaveHub/releases/latest)**.
