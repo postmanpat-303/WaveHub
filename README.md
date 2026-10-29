@@ -17,12 +17,17 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/light-main.png" alt="Wave Hub showing cards for BigWave Radio, ChipWave Tracker and StreamWave" width="820">
+  <img src="docs/screenshots/0.2.8-light.png" alt="Wave Hub showing numbered cards for BigWave Radio, ChipWave Studio and StreamWave, each with its own colour, platform labels and one big Install or Open button" width="820">
 </p>
 
 Wave Hub is a small, friendly app that looks after the Wave family for you. Click **Install**
 and it downloads the right version for your computer, checks it, and sets it up. When a new
 version comes out, click **Update**. That's it. No account, no ads, no tracking.
+
+The window has a sharp, printed look — hard edges, hairline rules and numbered cards — modelled
+on [ArtCraft Launcher](https://github.com/storytold/craft-launcher) by
+[storytold](https://github.com/storytold), whose one-click install and update flow showed the
+way too.
 
 | App | What it is |
 | --- | --- |
