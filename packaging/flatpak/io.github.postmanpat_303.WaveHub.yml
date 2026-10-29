@@ -10,9 +10,10 @@
 # from the root Cargo.lock, so the build works with no network:
 #   python3 flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
 #
-# `tag`/`commit` must point at the release being packaged. Flatpak's app id cannot be
-# changed later, hence io.github.postmanpat_303.WaveHub here even though the program
-# and the Linux packages call it wave-hub.
+# `tag` must point at the release being packaged. (Flathub asks for a commit too; the
+# flathub copy of this manifest pins one for the release it builds.) Flatpak's app id
+# cannot be changed later, hence io.github.postmanpat_303.WaveHub here even though the
+# program and the Linux packages call it wave-hub.
 app-id: io.github.postmanpat_303.WaveHub
 runtime: org.freedesktop.Platform
 runtime-version: '24.08'
@@ -65,5 +66,4 @@ modules:
       - type: git
         url: https://github.com/postmanpat-303/WaveHub.git
         tag: v0.2.8
-        commit: 348beb0046a68cc66657de7ca20e4044e5ed59ca
       - cargo-sources.json

@@ -19,10 +19,13 @@ attaches the bundle to that release.
 
 ## For a new version
 
-1. Change `tag`/`commit` in the manifest to the new `vX.Y.Z` tag and its commit.
+1. Change `tag` in the manifest to the new `vX.Y.Z` tag.
 2. If `Cargo.lock` changed, regenerate the sources:
    `python3 flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json`
    (from <https://github.com/flatpak/flatpak-builder-tools>).
+
+The manifest pins the release by tag; when the app is submitted to Flathub, its copy
+should also pin the tag's commit.
 
 ## Flathub
 
