@@ -16,7 +16,7 @@
 # program and the Linux packages call it wave-hub.
 app-id: io.github.postmanpat_303.WaveHub
 runtime: org.freedesktop.Platform
-runtime-version: '24.08'
+runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
