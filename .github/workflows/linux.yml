@@ -59,7 +59,7 @@ jobs:
       - name: makepkg
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pacman-package-manager makepkg fakeroot zstd xz-utils
+          sudo apt-get install -y --no-install-recommends pacman-package-manager makepkg fakeroot zstd xz-utils libarchive-tools
 
       - name: Build and package
         env:
