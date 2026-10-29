@@ -1,0 +1,69 @@
+# Wave Hub as a Flatpak.
+#
+# Build a bundle (Linux, needs flatpak-builder and the 24.08 SDK):
+#   flatpak-builder --user --force-clean --repo=repo build-dir \
+#       packaging/flatpak/io.github.postmanpat_303.WaveHub.yml
+#   flatpak build-bundle repo WaveHub-<version>-linux-x86_64.flatpak \
+#       io.github.postmanpat_303.WaveHub
+#
+# The sources under `cargo-sources.json` were made with flatpak-cargo-generator.py
+# from the root Cargo.lock, so the build works with no network:
+#   python3 flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
+#
+# `tag`/`commit` must point at the release being packaged. Flatpak's app id cannot be
+# changed later, hence io.github.postmanpat_303.WaveHub here even though the program
+# and the Linux packages call it wave-hub.
+app-id: io.github.postmanpat_303.WaveHub
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: wave-hub
+
+finish-args:
+  # It checks GitHub for releases and downloads apps.
+  - --share=network
+  # It installs and opens the apps in the user's own folders.
+  - --filesystem=home
+  # Windowing and drawing (winit/glow dlopen these at run time).
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/wave-hub/cargo
+    CARGO_NET_OFFLINE: 'true'
+
+modules:
+  - name: wave-hub
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --offline --locked
+      - install -Dm755 target/release/wave-hub /app/bin/wave-hub
+      # Flatpak wants the desktop file, AppStream file and icons to be named after the app id.
+      - install -Dm644 packaging/linux/wave-hub.desktop /app/share/applications/io.github.postmanpat_303.WaveHub.desktop
+      - >-
+          sed -i 's/^Icon=wave-hub$/Icon=io.github.postmanpat_303.WaveHub/'
+          /app/share/applications/io.github.postmanpat_303.WaveHub.desktop
+      - install -Dm644 packaging/linux/wave-hub.metainfo.xml /app/share/metainfo/io.github.postmanpat_303.WaveHub.metainfo.xml
+      - >-
+          sed -i
+          -e 's|<id>wave-hub</id>|<id>io.github.postmanpat_303.WaveHub</id>|'
+          -e 's|<launchable type="desktop-id">wave-hub.desktop</launchable>|<launchable type="desktop-id">io.github.postmanpat_303.WaveHub.desktop</launchable>|'
+          /app/share/metainfo/io.github.postmanpat_303.WaveHub.metainfo.xml
+      - |-
+          for s in 16 32 48 64 128 256 512 1024; do
+            install -Dm644 "assets/icons/wavehub_${s}.png" \
+              "/app/share/icons/hicolor/${s}x${s}/apps/io.github.postmanpat_303.WaveHub.png"
+          done
+      - install -Dm644 LICENSE /app/share/licenses/io.github.postmanpat_303.WaveHub/LICENSE
+    sources:
+      - type: git
+        url: https://github.com/postmanpat-303/WaveHub.git
+        tag: v0.2.8
+        commit: 348beb0046a68cc66657de7ca20e4044e5ed59ca
+      - cargo-sources.json

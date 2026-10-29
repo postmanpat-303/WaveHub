@@ -1,0 +1,66 @@
+name: Flatpak
+
+# Builds the Flatpak bundle for Linux x86_64 from packaging/flatpak/.
+# Run it by hand (Actions > Flatpak > Run workflow). With release_tag set, the bundle is
+# attached to that release (which must already exist, like the Windows and macOS runs);
+# empty = artifact only.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach the .flatpak to this release tag (e.g. v0.2.8); empty = artifact only"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  flatpak:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: ver
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "ver=$v" >> "$GITHUB_OUTPUT"
+          echo "Wave Hub $v"
+
+      - name: Check the manifest points at this version
+        run: |
+          MANIFEST=packaging/flatpak/io.github.postmanpat_303.WaveHub.yml
+          grep -q "tag: v${{ steps.ver.outputs.ver }}$" "$MANIFEST" \
+            || { echo "::error::$MANIFEST does not pin tag v${{ steps.ver.outputs.ver }}"; exit 1; }
+
+      - name: Install Flatpak and the SDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install -y --user flathub \
+            org.freedesktop.Platform//24.08 \
+            org.freedesktop.Sdk//24.08 \
+            org.freedesktop.Sdk.Extension.rust-stable//24.08
+
+      - name: Build the bundle
+        run: |
+          MANIFEST=packaging/flatpak/io.github.postmanpat_303.WaveHub.yml
+          flatpak-builder --user --force-clean --repo=repo build-dir "$MANIFEST"
+          flatpak build-bundle --arch=x86_64 repo \
+            "WaveHub-${{ steps.ver.outputs.ver }}-linux-x86_64.flatpak" \
+            io.github.postmanpat_303.WaveHub
+
+      - name: Attach to the release
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.release_tag }}" \
+            "WaveHub-${{ steps.ver.outputs.ver }}-linux-x86_64.flatpak" --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wavehub-flatpak
+          path: WaveHub-*-linux-x86_64.flatpak
