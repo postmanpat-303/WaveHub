@@ -1,0 +1,89 @@
+name: Linux
+
+# Builds the Linux files from a tag on Ubuntu, the same way scripts/release.sh does on a
+# Linux machine: AppImage, .deb, .rpm, Arch package and tar.gz, for x86_64 and aarch64.
+# Run it by hand (Actions > Linux > Run workflow). With release_tag set, the files and
+# SHA256SUMS.txt are attached to that release; empty = artifacts only.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach the files to this release tag (e.g. v0.2.8); empty = artifacts only"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: ver
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "ver=$v" >> "$GITHUB_OUTPUT"
+          echo "Wave Hub $v"
+
+      - name: Rust targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Rust packaging tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild,cargo-deb,cargo-generate-rpm
+
+      - name: Zig (for glibc 2.31 builds)
+        run: |
+          curl -sSL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz -o "$RUNNER_TEMP/zig.tar.xz"
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-linux-x86_64-0.13.0" >> "$GITHUB_PATH"
+
+      - name: AppImage tool and runtimes
+        run: |
+          mkdir -p tools/appimage
+          curl -sSL -o tools/appimage/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x tools/appimage/appimagetool
+          for a in x86_64 aarch64; do
+            curl -sSL -o "tools/appimage/runtime-$a" "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-$a"
+            chmod +x "tools/appimage/runtime-$a"
+          done
+
+      - name: makepkg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pacman-package-manager fakeroot zstd xz-utils
+
+      - name: Build and package
+        env:
+          APPIMAGETOOL: ${{ github.workspace }}/tools/appimage/appimagetool
+          RUNTIME_DIR: ${{ github.workspace }}/tools/appimage
+        run: |
+          scripts/release.sh
+          # The versionless copies the website's "latest" links point at, and SHA256SUMS.txt.
+          scripts/release.sh --sums-only
+
+      - name: Attach to the release
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          VER=${{ steps.ver.outputs.ver }}
+          test "$TAG" = "v$VER" || { echo "tag $TAG does not match Cargo version $VER"; exit 1; }
+          gh release upload "$TAG" --clobber dist/v$VER/*
+          gh release upload "$TAG" --clobber dist/v$VER/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wavehub-linux
+          path: dist/v*/
+          if-no-files-found: error
