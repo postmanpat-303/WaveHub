@@ -47,8 +47,13 @@ jobs:
       - name: Build the bundle
         run: |
           MANIFEST=packaging/flatpak/io.github.postmanpat_303.WaveHub.yml
-          flatpak-builder --user --force-clean --repo=repo build-dir "$MANIFEST"
           VER="${{ steps.ver.outputs.ver }}"
+          # --build-only + build-finish + build-export skips flatpak-builder's AppStream
+          # compose step, which the newer freedesktop SDK no longer ships appstream-compose for.
+          flatpak-builder --user --force-clean --build-only --state-dir=.flatpak-builder build-dir "$MANIFEST"
+          flatpak build-finish --command=wave-hub --share=network --share=ipc \
+            --socket=wayland --socket=fallback-x11 --device=dri --filesystem=home build-dir
+          flatpak build-export --arch=x86_64 repo build-dir
           flatpak build-bundle --arch=x86_64 repo \
             "WaveHub-$VER-linux-x86_64.flatpak" io.github.postmanpat_303.WaveHub
           # The versionless copy is what the website's "latest" link points at.
