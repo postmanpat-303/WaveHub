@@ -162,10 +162,12 @@ jobs:
           VER=${{ steps.ver.outputs.ver }}
           test "$TAG" = "v$VER" || { echo "tag $TAG does not match Cargo version $VER"; exit 1; }
           cd "dist/v$VER"
-          gh release upload "$TAG" --clobber "WaveHub-$VER-macos-universal.dmg" "WaveHub-$VER-macos-universal.zip"
+          cp "WaveHub-$VER-macos-universal.dmg" "WaveHub-macos-universal.dmg"
+          cp "WaveHub-$VER-macos-universal.zip" "WaveHub-macos-universal.zip"
+          gh release upload "$TAG" --clobber "WaveHub-$VER-macos-universal.dmg" "WaveHub-$VER-macos-universal.zip" "WaveHub-macos-universal.dmg" "WaveHub-macos-universal.zip"
           gh release download "$TAG" --pattern SHA256SUMS.txt --clobber
           grep -v -- '-macos-universal\.' SHA256SUMS.txt > sums.new || true
-          shasum -a 256 "WaveHub-$VER-macos-universal.dmg" "WaveHub-$VER-macos-universal.zip" >> sums.new
+          shasum -a 256 "WaveHub-$VER-macos-universal.dmg" "WaveHub-$VER-macos-universal.zip" "WaveHub-macos-universal.dmg" "WaveHub-macos-universal.zip" >> sums.new
           sort -k2 sums.new > SHA256SUMS.txt
           cat SHA256SUMS.txt
           gh release upload "$TAG" --clobber SHA256SUMS.txt

@@ -358,10 +358,11 @@ jobs:
           VER=${{ steps.ver.outputs.ver }}
           test "$TAG" = "v$VER" || { echo "tag $TAG does not match Cargo version $VER"; exit 1; }
           cd "dist/v$VER"
-          F="WaveHub-$VER-setup-x64.exe WaveHub-$VER-windows-x64.zip WaveHub.exe"
+          cp "WaveHub-$VER-setup-x64.exe" "WaveHub-setup-x64.exe"
+          F="WaveHub-$VER-setup-x64.exe WaveHub-$VER-windows-x64.zip WaveHub-setup-x64.exe WaveHub.exe"
           gh release upload "$TAG" --clobber $F
           gh release download "$TAG" --pattern SHA256SUMS.txt --clobber
-          grep -v -E ' (WaveHub-[^ ]*-setup-x64\.exe|WaveHub-[^ ]*-windows-x64\.zip|WaveHub\.exe)$' SHA256SUMS.txt > sums.new || true
+          grep -v -E ' (WaveHub-[^ ]*-setup-x64\.exe|WaveHub-setup-x64\.exe|WaveHub-[^ ]*-windows-x64\.zip|WaveHub\.exe)$' SHA256SUMS.txt > sums.new || true
           sha256sum $F >> sums.new
           sort -k2 sums.new > SHA256SUMS.txt
           cat SHA256SUMS.txt
