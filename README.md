@@ -143,10 +143,13 @@ scripts/test-packages.sh         # install-and-run checks for those files (Linux
 ```
 
 `scripts/release.sh` lists the tools it needs (cargo-zigbuild, cargo-deb, cargo-generate-rpm,
-mingw-w64, NSIS, makepkg, appimagetool). The Windows files are built on GitHub with Microsoft's
-toolchain by [`.github/workflows/windows.yml`](.github/workflows/windows.yml) (one `WaveHub.exe`,
-no extra DLLs), and the macOS files by [`.github/workflows/macos.yml`](.github/workflows/macos.yml);
-both are run by hand for a release.
+mingw-w64, NSIS, makepkg, appimagetool). A full release is one GitHub Actions run,
+[Release](.github/workflows/release.yml): it builds Windows, Linux, Mac and the Flatpak as jobs,
+checks every file once, and writes `SHA256SUMS.txt` in that one place. **validate** only checks.
+**update-draft** fills an existing draft and leaves Latest alone. **publish** makes that release
+Latest, and only after the check has passed. The tag has to exist already, and for publish you
+type it a second time. The older Windows, Linux, Mac and Flatpak workflows still build those
+files on their own; they no longer attach them or rewrite the checksum list.
 Release file names must keep the patterns above, because Wave Hub's own update check looks for them.
 
 ## 💛 Thank you, storytold

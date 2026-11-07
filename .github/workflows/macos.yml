@@ -1,18 +1,14 @@
 name: macOS
 
 # Universal (Apple Silicon + Intel) "Wave Hub.app", ad-hoc signed, as a .dmg and a .zip.
-# Run it by hand (Actions > macOS > Run workflow). With release_tag set, the two files are
-# attached to that release and their checksums are added to its SHA256SUMS.txt.
+# Run it by hand for the build, or let Release call it. It uploads artifacts only.
+# It does not attach files or rewrite SHA256SUMS.txt; Release does that once.
 on:
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Attach the dmg/zip to this release tag (e.g. v0.2.0); empty = artifacts only"
-        required: false
-        default: ""
+  workflow_call:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   macos:
@@ -142,32 +138,20 @@ jobs:
           rm -rf "$HOME/Applications/Wave Hub.app"
           echo "upgrade from 0.2.5 OK"
 
+      - name: Versionless copies
+        run: |
+          VER=${{ steps.ver.outputs.ver }}
+          cp "dist/v$VER/WaveHub-$VER-macos-universal.dmg" "dist/v$VER/WaveHub-macos-universal.dmg"
+          cp "dist/v$VER/WaveHub-$VER-macos-universal.zip" "dist/v$VER/WaveHub-macos-universal.zip"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: WaveHub-${{ steps.ver.outputs.ver }}-macos-universal
+          name: wavehub-macos
           path: |
             dist/v*/WaveHub-*-macos-universal.dmg
             dist/v*/WaveHub-*-macos-universal.zip
+            dist/v*/WaveHub-macos-universal.dmg
+            dist/v*/WaveHub-macos-universal.zip
             ${{ runner.temp }}/macos-launch.png
             ${{ runner.temp }}/chipwave-launch.png
             ${{ runner.temp }}/streamwave-launch.png
-
-      - name: Attach to the release and update SHA256SUMS.txt
-        if: inputs.release_tag != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ inputs.release_tag }}
-        run: |
-          VER=${{ steps.ver.outputs.ver }}
-          test "$TAG" = "v$VER" || { echo "tag $TAG does not match Cargo version $VER"; exit 1; }
-          cd "dist/v$VER"
-          cp "WaveHub-$VER-macos-universal.dmg" "WaveHub-macos-universal.dmg"
-          cp "WaveHub-$VER-macos-universal.zip" "WaveHub-macos-universal.zip"
-          gh release upload "$TAG" --clobber "WaveHub-$VER-macos-universal.dmg" "WaveHub-$VER-macos-universal.zip" "WaveHub-macos-universal.dmg" "WaveHub-macos-universal.zip"
-          gh release download "$TAG" --pattern SHA256SUMS.txt --clobber
-          grep -v -- '-macos-universal\.' SHA256SUMS.txt > sums.new || true
-          shasum -a 256 "WaveHub-$VER-macos-universal.dmg" "WaveHub-$VER-macos-universal.zip" "WaveHub-macos-universal.dmg" "WaveHub-macos-universal.zip" >> sums.new
-          sort -k2 sums.new > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-          gh release upload "$TAG" --clobber SHA256SUMS.txt

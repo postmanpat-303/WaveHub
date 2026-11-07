@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # The Linux files for a release, into dist/v<version>/, plus SHA256SUMS.txt.
-# Windows is built with Microsoft's toolchain by .github/workflows/windows.yml and macOS by
-# .github/workflows/macos.yml; download their artifacts into the same folder, then run
-# `scripts/release.sh --sums-only`. WINDOWS_LOCAL=1 also makes a MinGW Windows build here
-# (for testing only).
+# The GitHub Release workflow builds every platform and writes SHA256SUMS.txt once.
+# This script is the Linux half of that (and can still be run on its own).
+# WINDOWS_LOCAL=1 also makes a MinGW Windows build here, for testing only, not for a release.
 #
 #   WaveHub-<v>-setup-x64.exe           Windows setup (per-machine, admin)
 #   WaveHub-<v>-windows-x64.zip         Windows portable
