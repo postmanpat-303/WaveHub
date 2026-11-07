@@ -5,18 +5,14 @@ name: Windows
 #   WaveHub-<v>-setup-x64.exe     NSIS per-machine setup (installer/wavehub.nsi)
 #   WaveHub-<v>-windows-x64.zip   portable
 #   WaveHub.exe                   the bare program, for 0.1.0's update link
-# Run it by hand (Actions > Windows > Run workflow). With release_tag set, the files are
-# attached to that release and SHA256SUMS.txt is updated; empty = artifacts only.
+# Run it by hand for the build, or let Release call it. It uploads artifacts only.
+# It does not attach files or rewrite SHA256SUMS.txt; Release does that once.
 on:
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Attach the files to this release tag (e.g. v0.2.1); empty = artifacts only"
-        required: false
-        default: ""
+  workflow_call:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   windows:
@@ -334,9 +330,15 @@ jobs:
             foreach ($f in Get-ChildItem "dist\v$v\*") { "== $($f.Name)"; & $mp -Scan -ScanType 3 -File $f.FullName -DisableRemediation | Select-Object -Last 3 }
           } else { "Defender command-line scanner not found" }
 
+      - name: Versionless setup copy
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.ver }}"
+          Copy-Item "dist\v$v\WaveHub-$v-setup-x64.exe" "dist\v$v\WaveHub-setup-x64.exe"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: WaveHub-${{ steps.ver.outputs.ver }}-windows-x64
+          name: wavehub-windows
           path: dist/v*/*
           if-no-files-found: error
 
@@ -346,24 +348,3 @@ jobs:
           name: explorer-screenshots
           path: ${{ runner.temp }}/explorer-*.png
           if-no-files-found: warn
-
-      - name: Attach to the release and update SHA256SUMS.txt
-        if: inputs.release_tag != ''
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ inputs.release_tag }}
-        run: |
-          VER=${{ steps.ver.outputs.ver }}
-          test "$TAG" = "v$VER" || { echo "tag $TAG does not match Cargo version $VER"; exit 1; }
-          cd "dist/v$VER"
-          cp "WaveHub-$VER-setup-x64.exe" "WaveHub-setup-x64.exe"
-          F="WaveHub-$VER-setup-x64.exe WaveHub-$VER-windows-x64.zip WaveHub-setup-x64.exe WaveHub.exe"
-          gh release upload "$TAG" --clobber $F
-          gh release download "$TAG" --pattern SHA256SUMS.txt --clobber
-          grep -v -E ' (WaveHub-[^ ]*-setup-x64\.exe|WaveHub-setup-x64\.exe|WaveHub-[^ ]*-windows-x64\.zip|WaveHub\.exe)$' SHA256SUMS.txt > sums.new || true
-          sha256sum $F >> sums.new
-          sort -k2 sums.new > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-          gh release upload "$TAG" --clobber SHA256SUMS.txt

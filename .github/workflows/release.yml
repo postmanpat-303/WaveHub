@@ -1,0 +1,204 @@
+name: Release
+
+# One run builds Windows, Linux, Mac and the Flatpak, then checks the whole
+# file list once. Latest changes only when mode is publish, confirm is the
+# same tag again, and that check has already passed.
+#
+# Run it by hand (Actions > Release > Run workflow) on the commit you mean
+# to ship (main, or the vX.Y.Z tag). The release for that tag must already
+# exist. This workflow does not create a release and does not start the
+# other workflows by itself; they are jobs of this run.
+#
+#   validate      Build and check. Do not change the GitHub release.
+#   update-draft  After the check, replace files on that draft. Latest stays.
+#   publish       After the check, replace files, then make this release
+#                 Latest. Only after Del approves. Type the tag again.
+#
+# A failed run leaves the previous Latest release where it is. Running it
+# again replaces this tag's files from the new build; it does not merge
+# checksums with an older list.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag, for example v0.2.9. Must match Cargo.toml on this commit."
+        required: true
+        type: string
+      mode:
+        description: "validate, update-draft, or publish. publish makes Latest and needs Del's approval."
+        required: true
+        type: choice
+        options:
+          - validate
+          - update-draft
+          - publish
+        default: validate
+      confirm:
+        description: "For update-draft and publish, type the release tag again. Leave empty for validate."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wavehub-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          TAG: ${{ inputs.release_tag }}
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          test -n "$v"
+          test "$TAG" = "v$v" || { echo "tag $TAG does not match Cargo.toml $v"; exit 1; }
+          case "$MODE" in
+            validate|update-draft|publish) ;;
+            *) echo "unknown mode $MODE"; exit 1 ;;
+          esac
+          if [ "$MODE" != validate ] && [ "$CONFIRM" != "$TAG" ]; then
+            echo "confirm must be exactly $TAG"
+            exit 1
+          fi
+
+  matrix-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Matrix, gate and workflow contract
+        run: bash scripts/release-contract-test.sh
+
+  linux:
+    needs: guard
+    permissions:
+      contents: read
+    uses: ./.github/workflows/linux.yml
+
+  windows:
+    needs: guard
+    permissions:
+      contents: read
+    uses: ./.github/workflows/windows.yml
+
+  macos:
+    needs: guard
+    permissions:
+      contents: read
+    uses: ./.github/workflows/macos.yml
+
+  flatpak:
+    needs: guard
+    permissions:
+      contents: read
+    uses: ./.github/workflows/flatpak.yml
+
+  assemble:
+    needs: [guard, matrix-tests, linux, windows, macos, flatpak]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wavehub-*
+          path: collected
+
+      - name: Stage the full set and checksum it once
+        env:
+          VER: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash scripts/release-matrix.sh stage "$VER" staged collected
+          bash scripts/release-matrix.sh sums "$VER" staged
+          bash scripts/release-matrix.sh check "$VER" staged
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wavehub-release-checked
+          path: staged
+          if-no-files-found: error
+
+      - name: Decide whether this run may change the release
+        id: gate
+        if: inputs.mode != 'validate'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          # No release is created here. A missing tag fails closed.
+          meta=$(gh release view "$TAG" --json isDraft,isLatest,tagName)
+          test "$(echo "$meta" | jq -r .tagName)" = "$TAG"
+          decision=$(bash scripts/release-gate.sh "$MODE" "$CONFIRM" "$TAG" \
+            "$(echo "$meta" | jq -r .isDraft)" "$(echo "$meta" | jq -r .isLatest)")
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          echo "gate: $decision"
+          if [ "$decision" = none ]; then
+            echo "validate must not reach the upload step"
+            exit 1
+          fi
+          # Refuse files this release already has that are not in the matrix,
+          # before replacing anything.
+          ver=${{ needs.guard.outputs.version }}
+          unexpected=$(gh release view "$TAG" --json assets --jq '.assets[].name' | while read -r name; do
+            [ -n "$name" ] || continue
+            [ "$name" = SHA256SUMS.txt ] && continue
+            if ! bash scripts/release-matrix.sh expected "$ver" | grep -qx "$name"; then
+              echo "$name"
+            fi
+          done)
+          if [ -n "$unexpected" ]; then
+            echo "release has files outside the matrix:"
+            echo "$unexpected"
+            exit 1
+          fi
+
+      - name: Upload the checked files
+        if: inputs.mode != 'validate'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          VER: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          case "${{ steps.gate.outputs.decision }}" in
+            upload|upload-publish) ;;
+            *) echo "refusing to upload"; exit 1 ;;
+          esac
+          cd staged
+          # One upload of the whole set. Platform jobs do not write this list.
+          gh release upload "$TAG" --clobber ./*
+          back="$RUNNER_TEMP/release-back"
+          mkdir -p "$back"
+          gh release download "$TAG" -D "$back" --clobber
+          bash "$GITHUB_WORKSPACE/scripts/release-matrix.sh" check "$VER" "$back"
+
+      - name: Make this release Latest
+        if: inputs.mode == 'publish'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          test "${{ steps.gate.outputs.decision }}" = upload-publish
+          # Files were checked again after upload. Only then does Latest move.
+          gh release edit "$TAG" --draft=false --latest --prerelease=false
+          got=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)
+          test "$got" = "$TAG" || { echo "Latest is $got, not $TAG"; exit 1; }
+          echo "Latest is $TAG"

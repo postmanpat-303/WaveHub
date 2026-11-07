@@ -1,19 +1,15 @@
 name: Linux
 
-# Builds the Linux files from a tag on Ubuntu, the same way scripts/release.sh does on a
+# Builds the Linux files on Ubuntu, the same way scripts/release.sh does on a
 # Linux machine: AppImage, .deb, .rpm, Arch package and tar.gz, for x86_64 and aarch64.
-# Run it by hand (Actions > Linux > Run workflow). With release_tag set, the files and
-# SHA256SUMS.txt are attached to that release; empty = artifacts only.
+# Run it by hand for the build, or let Release call it. It uploads artifacts only.
+# It does not attach files or rewrite SHA256SUMS.txt; Release does that once.
 on:
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Attach the files to this release tag (e.g. v0.2.8); empty = artifacts only"
-        required: false
-        default: ""
+  workflow_call:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   linux:
@@ -67,20 +63,9 @@ jobs:
           RUNTIME_DIR: ${{ github.workspace }}/tools/appimage
         run: |
           scripts/release.sh
-          # The versionless copies the website's "latest" links point at, and SHA256SUMS.txt.
+          # Versionless AppImages. The release workflow writes the real checksum file.
           scripts/release.sh --sums-only
-
-      - name: Attach to the release
-        if: inputs.release_tag != ''
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.release_tag }}
-        run: |
-          VER=${{ steps.ver.outputs.ver }}
-          test "$TAG" = "v$VER" || { echo "tag $TAG does not match Cargo version $VER"; exit 1; }
-          gh release upload "$TAG" --clobber dist/v$VER/*
-          gh release upload "$TAG" --clobber dist/v$VER/SHA256SUMS.txt
+          rm -f dist/v"${{ steps.ver.outputs.ver }}"/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:

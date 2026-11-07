@@ -1,19 +1,14 @@
 name: Flatpak
 
 # Builds the Flatpak bundle for Linux x86_64 from packaging/flatpak/.
-# Run it by hand (Actions > Flatpak > Run workflow). With release_tag set, the bundle is
-# attached to that release (which must already exist, like the Windows and macOS runs);
-# empty = artifact only.
+# Run it by hand for the build, or let Release call it. It uploads artifacts only.
+# It does not attach files or rewrite SHA256SUMS.txt; Release does that once.
 on:
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Attach the .flatpak to this release tag (e.g. v0.2.8); empty = artifact only"
-        required: false
-        default: ""
+  workflow_call:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   flatpak:
@@ -59,25 +54,8 @@ jobs:
           # The versionless copy is what the website's "latest" link points at.
           cp "WaveHub-$VER-linux-x86_64.flatpak" "WaveHub-linux-x86_64.flatpak"
 
-      - name: Attach to the release and update SHA256SUMS.txt
-        if: inputs.release_tag != ''
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.release_tag }}
-        run: |
-          VER=${{ steps.ver.outputs.ver }}
-          test "$TAG" = "v$VER" || { echo "tag $TAG does not match Cargo version $VER"; exit 1; }
-          F="WaveHub-$VER-linux-x86_64.flatpak WaveHub-linux-x86_64.flatpak"
-          gh release upload "$TAG" --clobber $F
-          gh release download "$TAG" --pattern SHA256SUMS.txt --clobber
-          grep -v -E ' (WaveHub-[^ ]*-linux-x86_64\.flatpak|WaveHub-linux-x86_64\.flatpak)$' SHA256SUMS.txt > sums.new || true
-          sha256sum $F >> sums.new
-          sort -k2 sums.new > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-          gh release upload "$TAG" --clobber SHA256SUMS.txt
-
       - uses: actions/upload-artifact@v4
         with:
           name: wavehub-flatpak
-          path: WaveHub-*-linux-x86_64.flatpak
+          path: WaveHub*.flatpak
+          if-no-files-found: error
