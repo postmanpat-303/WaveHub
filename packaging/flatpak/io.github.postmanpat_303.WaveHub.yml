@@ -65,5 +65,5 @@ modules:
     sources:
       - type: git
         url: https://github.com/postmanpat-303/WaveHub.git
-        tag: v0.2.8
+        tag: v0.2.9
       - cargo-sources.json

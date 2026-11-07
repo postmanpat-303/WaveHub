@@ -10,8 +10,8 @@ flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flat
 flatpak install -y flathub org.freedesktop.Sdk//24.08 org.freedesktop.Sdk.Extension.rust-stable//24.08
 
 flatpak-builder --user --force-clean --repo=repo build-dir io.github.postmanpat_303.WaveHub.yml
-flatpak build-bundle repo WaveHub-0.2.8-linux-x86_64.flatpak io.github.postmanpat_303.WaveHub
-flatpak install --user WaveHub-0.2.8-linux-x86_64.flatpak
+flatpak build-bundle repo WaveHub-0.2.9-linux-x86_64.flatpak io.github.postmanpat_303.WaveHub
+flatpak install --user WaveHub-0.2.9-linux-x86_64.flatpak
 ```
 
 The GitHub workflow `.github/workflows/flatpak.yml` does the same and, given a release tag,
