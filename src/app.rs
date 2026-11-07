@@ -10,6 +10,7 @@ use egui::{vec2, Align, Color32, CornerRadius, FontId, Layout, Margin, RichText,
 use crate::github;
 use crate::install::{self, Phase, Plan};
 use crate::manifest::{self, AppSpec, Manifest};
+use crate::selfupdate::{self, HubOffer, UpdateState, WorkStage};
 use crate::store::{Installed, Kind, Paths, Record, Settings};
 
 const BUY_ME_A_COFFEE: &str = "https://buymeacoffee.com/postmanpat";
@@ -64,6 +65,10 @@ const LIGHT_PALETTE: Palette = Palette {
 };
 
 static DARK_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Set when a debug screenshot has been written, so the next frame can exit.
+#[cfg(debug_assertions)]
+static SHOT_SAVED: AtomicBool = AtomicBool::new(false);
 
 fn p() -> &'static Palette {
     if DARK_MODE.load(Ordering::Relaxed) {
@@ -261,6 +266,13 @@ struct Shared {
     /// The release file this computer should get when a newer Wave Hub is out
     /// (`Ok(None)`: the release has nothing for it).
     hub_asset: Option<Result<Option<String>, String>>,
+    /// The question at the top of the window. A repeated check must not rebuild it.
+    hub_update: UpdateState,
+    hub_offer: Option<HubOffer>,
+    /// Set while a download should stop. Later is not the same thing: the question stays.
+    hub_cancel: Option<Arc<AtomicBool>>,
+    /// Debug builds: a made-up release for a screenshot. The real check leaves it alone.
+    hub_sample: bool,
     /// For each app: the file names its plan tries, and which one the latest release has
     /// (`None`: none of them, e.g. StreamWave before its first Mac build).
     assets: HashMap<String, (Vec<String>, Option<String>)>,
@@ -295,6 +307,9 @@ pub struct WaveHub {
     shown_progress: HashMap<String, f32>,
     /// The app whose "Remove …?" box is open.
     confirm_uninstall: Option<String>,
+    /// Frames drawn, so a debug screenshot can wait until the window has laid out.
+    #[cfg(debug_assertions)]
+    shot_frame: u32,
 }
 
 /// What a card says when the latest release has no file for this computer.
@@ -346,16 +361,36 @@ fn find_external(shared: &Arc<Mutex<Shared>>, paths: &Paths, apps: &[AppSpec]) {
     }
 }
 
-/// The newest Wave Hub and, when it's newer than this one, the file to download.
+/// The newest Wave Hub and, when it's a newer stable release, the file to download.
 fn check_hub(repo: &str) -> (Latest, Option<Result<Option<String>, String>>) {
     match github::latest_tag(repo) {
         Ok(Some(tag)) => {
-            let asset = github::is_newer(&tag, env!("CARGO_PKG_VERSION")).then(|| crate::selfupdate::asset_for_this_computer(repo, &tag));
+            let asset = selfupdate::is_newer_stable(&tag, env!("CARGO_PKG_VERSION")).then(|| selfupdate::asset_for_this_computer(repo, &tag));
             (Latest::Found(tag), asset)
         }
         Ok(None) => (Latest::NoReleases, None),
         Err(e) => (Latest::Error(e), None),
     }
+}
+
+/// Stores a finished self-update check. Download progress and an open question are left as they are.
+fn apply_hub_check(shared: &Mutex<Shared>, hub: Latest, asset: Option<Result<Option<String>, String>>, dismissed: &str, manual: bool) {
+    let mut s = lock(shared);
+    if s.hub_sample {
+        return;
+    }
+    let outcome = match &hub {
+        Latest::Found(tag) if selfupdate::should_ask(tag, env!("CARGO_PKG_VERSION"), dismissed, manual) => selfupdate::CheckOutcome::Offer(tag.clone()),
+        Latest::Error(_) => selfupdate::CheckOutcome::Unreachable,
+        _ => selfupdate::CheckOutcome::Quiet,
+    };
+    s.hub_update = selfupdate::fold_check(std::mem::replace(&mut s.hub_update, UpdateState::Hidden), outcome, manual);
+    if let UpdateState::Asking { tag } = &s.hub_update {
+        let tag = tag.clone();
+        s.hub_offer = Some(HubOffer { tag, kind: selfupdate::detect(), asset: asset.clone().unwrap_or(Ok(None)) });
+    }
+    s.hub_latest = Some(hub);
+    s.hub_asset = asset;
 }
 
 fn lock(s: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
@@ -385,7 +420,24 @@ impl WaveHub {
             _ => Tab::Apps,
         };
         let confirm_uninstall = std::env::var("WAVEHUB_CONFIRM_UNINSTALL").ok();
-        let hub = Self { manifest, paths, settings, shared, tab, filter: Filter::All, row_heights: Vec::new(), shown_progress: HashMap::new(), confirm_uninstall };
+        let hub = Self {
+            manifest,
+            paths,
+            settings,
+            shared,
+            tab,
+            filter: Filter::All,
+            row_heights: Vec::new(),
+            shown_progress: HashMap::new(),
+            confirm_uninstall,
+            #[cfg(debug_assertions)]
+            shot_frame: 0,
+        };
+        // A local stand-in for the prompt, so a screenshot doesn't need a published release.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("WAVEHUB_SCREENSHOT_UPDATE").is_some() {
+            hub.seed_sample_offer();
+        }
         hub.check_now(&cc.egui_ctx);
         hub.repair_shortcuts();
         hub
@@ -422,6 +474,7 @@ impl WaveHub {
 
     /// Looks up the newest release of every app (and of Wave Hub) in the background.
     fn check_now(&self, ctx: &egui::Context) {
+        let sample = lock(&self.shared).hub_sample;
         {
             let mut s = lock(&self.shared);
             if s.checking {
@@ -431,13 +484,16 @@ impl WaveHub {
             for app in &self.manifest.apps {
                 s.latest.insert(app.id.clone(), Latest::Checking);
             }
-            s.hub_latest = Some(Latest::Checking);
+            if !sample {
+                s.hub_latest = Some(Latest::Checking);
+            }
         }
         let shared = self.shared.clone();
         let apps = self.manifest.apps.clone();
         let hub_repo = self.manifest.launcher_repo.clone();
         let paths = self.paths.clone();
         let prefer_installer = self.settings.prefer_installer;
+        let dismissed = self.settings.dismissed_hub_update.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             find_external(&shared, &paths, &apps);
@@ -462,10 +518,11 @@ impl WaveHub {
                 lock(&shared).latest.insert(app.id.clone(), latest);
                 ctx.request_repaint();
             }
-            let (hub, asset) = check_hub(&hub_repo);
+            if !sample {
+                let (hub, asset) = check_hub(&hub_repo);
+                apply_hub_check(&shared, hub, asset, &dismissed, false);
+            }
             let mut s = lock(&shared);
-            s.hub_latest = Some(hub);
-            s.hub_asset = asset;
             s.checking = false;
             s.checked_at = Some(Instant::now());
             ctx.request_repaint();
@@ -473,15 +530,113 @@ impl WaveHub {
     }
 
     fn check_hub_only(&self, ctx: &egui::Context) {
+        if lock(&self.shared).hub_sample || matches!(lock(&self.shared).hub_update, UpdateState::Working { .. }) {
+            return;
+        }
         lock(&self.shared).hub_latest = Some(Latest::Checking);
         let shared = self.shared.clone();
         let repo = self.manifest.launcher_repo.clone();
+        let dismissed = self.settings.dismissed_hub_update.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let (hub, asset) = check_hub(&repo);
+            apply_hub_check(&shared, hub, asset, &dismissed, true);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Debug only: show the prompt for a version that is obviously not a published release.
+    #[cfg(debug_assertions)]
+    fn seed_sample_offer(&self) {
+        let tag = std::env::var("WAVEHUB_SCREENSHOT_UPDATE").unwrap_or_else(|_| "v99.0.0".into());
+        let tag = if tag.chars().next().is_some_and(|c| c == 'v' || c == 'V') { tag } else { format!("v{tag}") };
+        let file = format!("WaveHub-{}-screenshot-mock.txt", selfupdate::display_version(&tag));
+        let mut s = lock(&self.shared);
+        s.hub_sample = true;
+        s.hub_latest = Some(Latest::Found(tag.clone()));
+        s.hub_asset = Some(Ok(Some(file.clone())));
+        s.hub_offer = Some(HubOffer { tag: tag.clone(), kind: selfupdate::detect(), asset: Ok(Some(file)) });
+        s.hub_update = UpdateState::Asking { tag };
+    }
+
+    fn dismiss_hub_update(&mut self) {
+        let tag = {
+            let mut s = lock(&self.shared);
+            let Some(tag) = selfupdate::dismiss_tag(&s.hub_update) else {
+                return;
+            };
+            s.hub_update = UpdateState::Hidden;
+            tag
+        };
+        self.settings.dismissed_hub_update = tag;
+        if let Err(e) = self.settings.save(&self.paths) {
+            crate::links::log(&format!("couldn't remember Later for the Wave Hub update: {e}"));
+        }
+    }
+
+    fn cancel_hub_download(&self) {
+        if let Some(cancel) = lock(&self.shared).hub_cancel.clone() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Downloads the release file and checks it. Does not run it, replace this copy, or quit.
+    fn start_hub_download(&self, ctx: &egui::Context) {
+        let (offer, sample) = {
+            let s = lock(&self.shared);
+            (s.hub_offer.clone(), s.hub_sample)
+        };
+        let Some(offer) = offer else {
+            return;
+        };
+        if sample {
+            let mut s = lock(&self.shared);
+            s.hub_update = selfupdate::mark_failed(s.hub_update.clone(), "This is sample data for a screenshot, not a published release. Nothing was downloaded.".into());
+            return;
+        }
+        let Ok(Some(file)) = offer.asset.clone() else {
+            return;
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        {
+            let mut s = lock(&self.shared);
+            if !matches!(s.hub_update, UpdateState::Asking { .. } | UpdateState::Failed { .. }) {
+                return;
+            }
+            s.hub_update = selfupdate::begin_download(std::mem::replace(&mut s.hub_update, UpdateState::Hidden), &file);
+            s.hub_cancel = Some(cancel.clone());
+        }
+        let shared = self.shared.clone();
+        let repo = self.manifest.launcher_repo.clone();
+        let dest = self.paths.downloads();
+        let kind = offer.kind;
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let result = selfupdate::fetch_verified(&repo, &offer.tag, &file, &dest, &cancel, &mut |event| {
+                let mut s = lock(&shared);
+                s.hub_update = match event {
+                    selfupdate::FetchEvent::CheckingSums => s.hub_update.clone(),
+                    selfupdate::FetchEvent::Progress { done, total } => selfupdate::note_progress(std::mem::replace(&mut s.hub_update, UpdateState::Hidden), done, total),
+                    selfupdate::FetchEvent::Verifying => selfupdate::mark_verifying(std::mem::replace(&mut s.hub_update, UpdateState::Hidden)),
+                };
+                ctx.request_repaint();
+            });
             let mut s = lock(&shared);
-            s.hub_latest = Some(hub);
-            s.hub_asset = asset;
+            s.hub_cancel = None;
+            // Cancel wins over a late error, and over a file that finished as the click landed.
+            // The question comes back; the version is not dismissed.
+            let cancelled = cancel.load(Ordering::Relaxed) || result.as_ref().is_err_and(|e| e == "Cancelled.");
+            s.hub_update = if cancelled {
+                selfupdate::cancel_download(std::mem::replace(&mut s.hub_update, UpdateState::Hidden))
+            } else {
+                match result {
+                    Ok(path) => {
+                        let note = selfupdate::handoff(kind, &file);
+                        selfupdate::mark_ready(std::mem::replace(&mut s.hub_update, UpdateState::Hidden), path, note)
+                    }
+                    Err(e) => selfupdate::mark_failed(std::mem::replace(&mut s.hub_update, UpdateState::Hidden), e),
+                }
+            };
             ctx.request_repaint();
         });
     }
@@ -1231,6 +1386,162 @@ impl WaveHub {
         support_box(ui, false);
     }
 
+    /// The update question. It stays until Later, and a check does not open a second one.
+    fn hub_banner(&mut self, ui: &mut Ui) {
+        let ctx = ui.ctx().clone();
+        let (state, offer, sample, stopping) = {
+            let s = lock(&self.shared);
+            let stopping = s.hub_cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed));
+            (s.hub_update.clone(), s.hub_offer.clone(), s.hub_sample, stopping)
+        };
+        if matches!(state, UpdateState::Hidden) {
+            return;
+        }
+        let installed = env!("CARGO_PKG_VERSION");
+        let repo = self.manifest.launcher_repo.clone();
+        let mut act = HubAct::None;
+        egui::Frame::new().fill(p().card).stroke(Stroke::new(1.0, p().line)).corner_radius(CornerRadius::ZERO).inner_margin(Margin::symmetric(14, 12)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                status_chip(ui, "UPDATE", HUB_PINK);
+                ui.add_space(8.0);
+                hud(ui, "WAVE HUB", 9.5, p().muted);
+            });
+            ui.add_space(8.0);
+            match &state {
+                UpdateState::Hidden => {}
+                UpdateState::Asking { tag } => {
+                    self.hub_ask(ui, tag, installed, offer.as_ref(), sample, &repo, &mut act);
+                }
+                UpdateState::Working { file, stage, done, total, .. } => {
+                    let (step, label) = match stage {
+                        WorkStage::CheckingSums => (0, "Reading the checksum list…".to_string()),
+                        WorkStage::Downloading if *total > 0 => (0, format!("Downloading {file} — {} of {}", mb(*done), mb(*total))),
+                        WorkStage::Downloading => (0, format!("Downloading {file} — {}", mb(*done))),
+                        WorkStage::Verifying => (1, format!("Checking {file} against its published checksum…")),
+                    };
+                    ui.label(RichText::new(label).size(14.0).color(p().text));
+                    ui.add_space(6.0);
+                    hub_steps(ui, step);
+                    ui.add_space(6.0);
+                    let fraction = if *total > 0 {
+                        *done as f32 / *total as f32
+                    } else if matches!(stage, WorkStage::Verifying) {
+                        1.0
+                    } else {
+                        0.02
+                    };
+                    progress_bar(ui, fraction, HUB_PINK, ui.available_width(), ui.input(|i| i.time));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let label = if stopping { "STOPPING\u{2026}" } else { "CANCEL" };
+                            if action_button(ui, label, !stopping, false).clicked() {
+                                act = HubAct::Cancel;
+                            }
+                        });
+                    });
+                }
+                UpdateState::Ready { tag, path, note, .. } => {
+                    ui.label(RichText::new("Downloaded and checked.").size(16.0).family(bold()).color(p().text));
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(RichText::new(note).size(12.5).color(p().text)).wrap());
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(path.display().to_string()).monospace().size(11.0).color(p().muted));
+                    ui.add_space(8.0);
+                    let notes = github::release_page(&repo, tag);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if action_button(ui, "DONE", true, true).clicked() {
+                                act = HubAct::Later;
+                            }
+                            ui.add_space(6.0);
+                            if action_button(ui, "SHOW FILE", true, false).clicked() {
+                                act = HubAct::Show(path.clone());
+                            }
+                            ui.add_space(8.0);
+                            link(ui, "WHAT'S NEW \u{2197}", &notes);
+                        });
+                    });
+                }
+                UpdateState::Failed { tag, message } => {
+                    ui.label(RichText::new("Couldn't update Wave Hub").size(16.0).family(bold()).color(p().bad));
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(RichText::new(message).size(12.5).color(p().text)).wrap());
+                    ui.add_space(8.0);
+                    let notes = github::release_page(&repo, tag);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if !sample && action_button(ui, "RETRY", true, true).clicked() {
+                                act = HubAct::Retry;
+                            }
+                            ui.add_space(6.0);
+                            if action_button(ui, "LATER", true, false).clicked() {
+                                act = HubAct::Later;
+                            }
+                            ui.add_space(8.0);
+                            link(ui, "WHAT'S NEW \u{2197}", &notes);
+                        });
+                    });
+                }
+            }
+        });
+        ui.add_space(12.0);
+        match act {
+            HubAct::None => {}
+            HubAct::Later => self.dismiss_hub_update(),
+            HubAct::Update | HubAct::Retry => self.start_hub_download(&ctx),
+            HubAct::Cancel => self.cancel_hub_download(),
+            HubAct::Show(path) => {
+                if let Some(folder) = path.parent() {
+                    install::reveal(folder);
+                }
+            }
+            HubAct::Check => self.check_hub_only(&ctx),
+        }
+    }
+
+    fn hub_ask(&self, ui: &mut Ui, tag: &str, installed: &str, offer: Option<&HubOffer>, sample: bool, repo: &str, act: &mut HubAct) {
+        let version = selfupdate::display_version(tag);
+        ui.label(RichText::new(format!("Wave Hub {version} is available.")).size(18.0).family(bold()).color(p().text));
+        ui.add_space(2.0);
+        ui.label(RichText::new(format!("You're using {installed}.")).size(13.0).color(p().text));
+        ui.add_space(6.0);
+        if sample {
+            ui.add(egui::Label::new(RichText::new("Sample data for a screenshot. This is not a published release, and Update will not download anything.").size(12.5).color(p().warn)).wrap());
+            ui.add_space(6.0);
+        }
+        let notes = github::release_page(repo, tag);
+        let (detail, file, can_update, try_again) = match offer.map(|o| (&o.kind, &o.asset)) {
+            Some((kind, Ok(Some(file)))) => (selfupdate::before_you_update(*kind).to_string(), Some(file.clone()), true, false),
+            Some((kind, Ok(None))) => (selfupdate::no_file_message(*kind), None, false, false),
+            Some((_, Err(e))) => (format!("Couldn't see the download for this computer: {e}"), None, false, true),
+            None => ("Looking up the download for this computer…".into(), None, false, false),
+        };
+        ui.add(egui::Label::new(RichText::new(detail).size(12.5).color(p().muted)).wrap());
+        if let Some(file) = file.as_ref() {
+            ui.add_space(4.0);
+            ui.label(RichText::new(file).monospace().size(11.0).color(p().text));
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if can_update && action_button(ui, "UPDATE", true, true).clicked() {
+                    *act = HubAct::Update;
+                }
+                if try_again && action_button(ui, "TRY AGAIN", true, true).clicked() {
+                    *act = HubAct::Check;
+                }
+                ui.add_space(6.0);
+                if action_button(ui, "LATER", true, false).clicked() {
+                    *act = HubAct::Later;
+                }
+                ui.add_space(8.0);
+                link(ui, "WHAT'S NEW \u{2197}", &notes);
+            });
+        });
+    }
+
     fn about_page(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         hud(ui, "03 \u{2014} ABOUT", 10.0, p().muted);
@@ -1274,21 +1585,30 @@ impl WaveHub {
         section(ui, "Updates", |ui| {
             let hub = lock(&self.shared).hub_latest.clone();
             let current = env!("CARGO_PKG_VERSION");
+            let dismissed = self.settings.dismissed_hub_update.clone();
             let (text, color) = match &hub {
-                None | Some(Latest::Checking) => ("Checking for a newer Wave Hub…".to_string(), p().muted),
-                Some(Latest::Found(tag)) if github::is_newer(tag, current) => (format!("Wave Hub {} is available.", tag.trim_start_matches('v')), p().warn),
-                Some(Latest::Found(_)) => ("You have the newest Wave Hub.".to_string(), p().good),
-                Some(Latest::NoReleases) => ("No newer version. You're up to date.".to_string(), p().good),
-                Some(Latest::Error(e)) => (format!("Couldn't check: {e}"), p().bad),
+                None | Some(Latest::Checking) => (format!("Installed {current}. Looking for a newer stable release…"), p().muted),
+                Some(Latest::Found(tag)) => match selfupdate::compare_stable(tag, current) {
+                    selfupdate::StableCompare::Newer if !selfupdate::should_ask(tag, current, &dismissed, false) => {
+                        (format!("Installed {current}. Wave Hub {} is available. You chose Later for this version.", selfupdate::display_version(tag)), p().warn)
+                    }
+                    selfupdate::StableCompare::Newer => (format!("Installed {current}. Wave Hub {} is available.", selfupdate::display_version(tag)), p().warn),
+                    selfupdate::StableCompare::NotNewer => (format!("Installed {current}. You have the newest stable Wave Hub."), p().good),
+                    selfupdate::StableCompare::NotStable => (format!("Installed {current}. The newest tag isn't a stable release, so there's nothing to offer."), p().muted),
+                },
+                Some(Latest::NoReleases) => (format!("Installed {current}. No stable release to compare yet."), p().good),
+                Some(Latest::Error(e)) => (format!("Installed {current}. Couldn't check: {e}"), p().bad),
             };
+            ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
+            ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 if ui.add(egui::Button::new(RichText::new("CHECK FOR UPDATES").size(10.0).family(bold()).color(p().text)).corner_radius(CornerRadius::ZERO)).clicked() {
                     self.check_hub_only(&ctx);
                 }
-                ui.label(RichText::new(text).color(color));
-                if let Some(Latest::Found(tag)) = hub.as_ref().filter(|h| matches!(h, Latest::Found(t) if github::is_newer(t, current))) {
+                if let Some(Latest::Found(tag)) = hub.as_ref().filter(|h| matches!(h, Latest::Found(t) if selfupdate::is_newer_stable(t, current))) {
                     let repo = &self.manifest.launcher_repo;
-                    // Straight to the file that matches how this copy was installed.
+                    // Straight to the file that matches how this copy was installed. The bar at
+                    // the top is the same file, checked, and only after Update is clicked.
                     let asset = lock(&self.shared).hub_asset.clone();
                     match asset {
                         Some(Ok(Some(file))) => link(ui, &format!("Download {file}"), &github::download_url(repo, tag, &file)),
@@ -1298,6 +1618,15 @@ impl WaveHub {
                     link(ui, "What's new", &github::release_page(repo, tag));
                 }
             });
+            ui.add_space(4.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new("When a newer stable release is out, Wave Hub asks at the top of the window before it downloads anything. Later hides that version until a newer one exists. Check for updates asks again. Wave Hub stays open; it does not install the file or restart itself.")
+                        .color(p().muted)
+                        .small(),
+                )
+                .wrap(),
+            );
         });
         section(ui, "Settings", |ui| {
             ui.horizontal(|ui| {
@@ -1345,6 +1674,31 @@ impl WaveHub {
                 }
             });
         });
+    }
+
+    /// `WAVEHUB_SCREENSHOT_OUT` writes one PNG of the window and exits. Debug builds only.
+    #[cfg(debug_assertions)]
+    fn maybe_save_screenshot(&mut self, ui: &mut Ui) {
+        let Ok(path) = std::env::var("WAVEHUB_SCREENSHOT_OUT") else {
+            return;
+        };
+        if SHOT_SAVED.load(Ordering::Relaxed) {
+            std::process::exit(0);
+        }
+        self.shot_frame += 1;
+        if self.shot_frame == 12 {
+            ui.ctx().request_screenshot(move |image| {
+                let mut rgba = Vec::with_capacity(image.pixels.len() * 4);
+                for pixel in &image.pixels {
+                    rgba.extend_from_slice(&pixel.to_array());
+                }
+                let _ = image::save_buffer(path, &rgba, image.size[0] as u32, image.size[1] as u32, image::ExtendedColorType::Rgba8);
+                SHOT_SAVED.store(true, Ordering::Relaxed);
+            });
+        }
+        if self.shot_frame < 90 {
+            ui.ctx().request_repaint();
+        }
     }
 
     fn footer(&self, ui: &mut Ui) {
@@ -1446,6 +1800,7 @@ impl eframe::App for WaveHub {
         egui::Panel::top("header").frame(egui::Frame::new().fill(p().bg).inner_margin(Margin::symmetric(22, 10))).show(ui, |ui| self.header(ui));
         egui::Panel::bottom("footer").frame(egui::Frame::new().fill(p().bg).inner_margin(Margin::symmetric(22, 8))).show(ui, |ui| self.footer(ui));
         egui::CentralPanel::default().frame(egui::Frame::new().fill(p().bg).inner_margin(Margin::symmetric(22, 16))).show(ui, |ui| {
+            self.hub_banner(ui);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.tab {
                 Tab::Apps => self.apps_page(ui),
                 Tab::Community => self.community_page(ui),
@@ -1458,13 +1813,15 @@ impl eframe::App for WaveHub {
         // Smooth animation while anything is moving; otherwise just keep "Checked n min ago" fresh.
         let busy = {
             let s = lock(&self.shared);
-            !s.jobs.is_empty() || !s.finished.is_empty() || !s.notes.is_empty()
+            !s.jobs.is_empty() || !s.finished.is_empty() || !s.notes.is_empty() || matches!(s.hub_update, UpdateState::Working { .. })
         };
         if busy {
             ui.ctx().request_repaint();
         } else {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs(30));
         }
+        #[cfg(debug_assertions)]
+        self.maybe_save_screenshot(ui);
     }
 }
 
@@ -1563,6 +1920,20 @@ fn progress_bar(ui: &mut Ui, fraction: f32, color: Color32, width: f32, time: f6
         painter.with_clip_rect(fill).rect_filled(sheen, CornerRadius::ZERO, Color32::from_white_alpha(40));
     }
     ui.painter().rect_stroke(rect, CornerRadius::ZERO, hairline(), egui::StrokeKind::Inside);
+}
+
+/// Download · Check · Ready, for Wave Hub's own update. Step 2 is the checked file, not an install.
+fn hub_steps(ui: &mut Ui, step: usize) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        for (i, label) in ["DOWNLOAD", "CHECK", "READY"].iter().enumerate() {
+            let (dot, _) = ui.allocate_exact_size(vec2(7.0, 7.0), Sense::hover());
+            let c = if i <= step { HUB_PINK } else { p().line };
+            ui.painter().rect_filled(dot, CornerRadius::ZERO, c);
+            hud(ui, label, 8.5, if i == step { p().text } else { p().muted });
+            ui.add_space(9.0);
+        }
+    });
 }
 
 /// Download · Check · Install, with the current step lit.
@@ -1671,7 +2042,7 @@ fn credits_box(ui: &mut Ui) {
         ui.add(
             egui::Label::new(
                 RichText::new(
-                    "The look of this window \u{2014} the hard edges, hairline rules, numbered cards and small-caps labels \u{2014} is modelled on ArtCraft Launcher by storytold. Their one-click install and update flow showed the way too. Wave Hub's code and artwork are its own.",
+                    "The look of this window \u{2014} the hard edges, hairline rules, numbered cards and small-caps labels \u{2014} is modelled on ArtCraft Launcher by storytold. Their one-click install and update flow showed the way too, including asking when a new version is out and offering Later. Wave Hub's code and artwork are its own, and it waits for a yes before it downloads its own update.",
                 )
                 .size(12.5)
                 .color(p().muted),
@@ -1685,6 +2056,16 @@ fn credits_box(ui: &mut Ui) {
             link(ui, "getartcraft.com", "https://getartcraft.com/");
         });
     });
+}
+
+enum HubAct {
+    None,
+    Later,
+    Update,
+    Retry,
+    Cancel,
+    Show(std::path::PathBuf),
+    Check,
 }
 
 /// "Couldn't open your browser", with the address to copy by hand.

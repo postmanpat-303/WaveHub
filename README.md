@@ -61,7 +61,9 @@ way too.
 - Every link (GitHub, release notes, Discussions, Buy Me a Coffee, PayPal) opens in your default
   browser. Wave Hub's version is shown on the About page and in the footer.
 - **Light and dark themes** (light by default) in **About → Settings**.
-- A **Community** page with each app's Discussions, and **Check for updates** for Wave Hub itself.
+- A **Community** page with each app's Discussions. When a newer stable Wave Hub is out, a bar at
+  the top asks before anything is downloaded. **Later** hides that version. **About → Check for
+  updates** asks again, and still links to the file for how you installed it.
 
 <p align="center">
   <img src="docs/screenshots/v2-install-progress.png" alt="StreamWave downloading with speed and time left" width="49%">
@@ -104,9 +106,15 @@ To check a download, compare it with `SHA256SUMS.txt` from the same release
 (`sha256sum -c SHA256SUMS.txt --ignore-missing` on Linux, `certutil -hashfile <file> SHA256` on
 Windows, `shasum -a 256 <file>` on a Mac).
 
-**Updating Wave Hub:** About → **Check for updates** tells you when there's a new version and links
-straight to the right file for how you installed it (the setup, the zip, the .deb, the AppImage and
-so on).
+**Updating Wave Hub:** shortly after the window opens, Wave Hub looks up its own latest stable
+release in the background (startup isn't held up, and pre-releases aren't offered). If one is
+newer than the copy you're using, a bar at the top shows both versions and asks. **Update**
+downloads the file that matches how you installed it — the setup, the zip, the .deb, the AppImage
+and so on — and checks it against `SHA256SUMS.txt`. **Later** hides that version until a newer one
+exists. Nothing is installed or restarted for you: a package, Flatpak, Windows setup, portable zip,
+AppImage or Mac app stays where it is, and the bar says what to do next. **About → Check for
+updates** asks again, and still links straight at the file. Offline, the bar stays quiet and About
+says the check failed.
 
 > [!NOTE]
 > Wave Hub has been tested on Linux and under Wine. If you try it on Windows, especially installing
@@ -146,8 +154,9 @@ Release file names must keep the patterns above, because Wave Hub's own update c
 Wave Hub was inspired by [storytold](https://github.com/storytold)'s
 [ArtCraft Launcher](https://github.com/storytold/craft-launcher) and their Craft apps such as
 [PhotoCraft](https://github.com/storytold/photocraft). Their one-click install and update flow
-showed the way. Wave Hub's code and artwork are its own; none of ArtCraft's code, names, logos or
-icons are used.
+showed the way, including the startup question that names the new version and can be answered
+Later. Wave Hub's code and artwork are its own; none of ArtCraft's code, names, logos or
+icons are used. It downloads its own update only after you agree, and it does not restart itself.
 
 ## ☕ Support
 

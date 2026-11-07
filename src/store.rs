@@ -87,11 +87,14 @@ pub struct Settings {
     pub theme: String,
     /// Windows portable installs: make Start menu and Desktop shortcuts (on by default).
     pub shortcuts: bool,
+    /// The Wave Hub release the user pressed Later on. A higher stable version still asks.
+    /// Empty when they haven't dismissed one. Missing in older settings files.
+    pub dismissed_hub_update: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { prefer_installer: false, theme: "light".into(), shortcuts: true }
+        Self { prefer_installer: false, theme: "light".into(), shortcuts: true, dismissed_hub_update: String::new() }
     }
 }
 
@@ -130,4 +133,22 @@ impl Settings {
 
 pub fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_settings_files_still_load() {
+        let v: Settings = serde_json::from_str(r#"{"prefer_installer":true,"theme":"dark","shortcuts":false}"#).unwrap();
+        assert!(v.prefer_installer);
+        assert_eq!(v.theme, "dark");
+        assert!(!v.shortcuts);
+        assert_eq!(v.dismissed_hub_update, "");
+        let text = serde_json::to_string(&Settings { dismissed_hub_update: "v1.2.3".into(), ..Settings::default() }).unwrap();
+        let again: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(again.dismissed_hub_update, "v1.2.3");
+        assert!(!again.prefer_installer);
+    }
 }
